@@ -1,0 +1,94 @@
+;	LSX-Dodgers MODE (内部コマンド)
+;	MZ-2500: 画面幅を実行時に 40桁/80桁 へ切り替える。 MODE 40 / MODE 80
+;	幅は M25BANK.ASM の WIDTHV (と WIDM1)、LDWORK.ASM の _WIDTH / _WIDTH_MINUS / _PAGE_MINUS、_NEG_PAGE_SWC に持つ。
+;	ハードはE8h bit5(CH80)とCRTCレジスタ7,8だけ(TINIT A=08h/09h のポート書き込みの差。HANDOFF §5-17)。
+;	外付けの MODE.COM は MZ-700 用の処理で画面を壊すため、同名の内部コマンドが先に実行される。
+
+C_MODE:
+	CALL	SPCUT
+	LD	B,40
+	CP	'4'
+	JR	Z,CMD1
+	LD	B,80
+	CP	'8'
+	JR	NZ,CMDBAD
+CMD1:
+	INC	DE
+	LD	A,(DE)
+	CP	'0'
+	JR	NZ,CMDBAD
+	INC	DE
+	LD	A,(DE)
+	CP	021H			;数字の後ろは空白・改行・終端だけ
+	JR	NC,CMDBAD
+	LD	A,B
+	CALL	SETWID
+	AND	A
+	RET
+CMDBAD:
+	LD	HL,CMDMSG
+	CALL	MSX
+	AND	A
+	RET
+CMDMSG:
+	DEFM	"usage: mode 40|80"
+	DB	3,0
+
+;	A=40 or 80。画面を消してホームに戻る
+SETWID:
+	PUSH	BC
+	PUSH	DE
+	PUSH	HL
+	LD	B,A
+	CALL	VNORM			;表示開始セル=0に戻す
+	DI
+	LD	A,B
+	LD	(WIDTHV),A
+	LD	(_WIDTH),A
+	DEC	A
+	LD	(WIDM1),A
+	LD	E,B
+	LD	D,0
+	LD	HL,0
+	OR	A
+	SBC	HL,DE
+	LD	(_WIDTH_MINUS),HL
+	LD	HL,0FC18H		;-40*25
+	LD	A,B
+	CP	80
+	JR	NZ,SW1
+	LD	HL,0F830H		;-80*25
+SW1:
+	LD	(_PAGE_MINUS),HL
+	LD	(_NEG_PAGE_SWC),HL
+	LD	A,B
+	CP	80
+	JR	Z,SW80
+	IN	A,(0E8H)
+	AND	0DFH			;CH80=0
+	OUT	(0E8H),A
+	LD	B,008H
+	LD	C,058H
+	JR	SW2
+SW80:
+	IN	A,(0E8H)
+	OR	020H			;CH80=1
+	OUT	(0E8H),A
+	LD	B,009H
+	LD	C,059H
+SW2:
+	LD	A,7
+	OUT	(0F4H),A
+	LD	A,B
+	OUT	(0F5H),A
+	LD	A,8
+	OUT	(0F4H),A
+	LD	A,C
+	OUT	(0F5H),A
+	EI
+	LD	C,00CH
+	CALL	CONOUT1		;画面を消してホームへ
+	POP	HL
+	POP	DE
+	POP	BC
+	RET

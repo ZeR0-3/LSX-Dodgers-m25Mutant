@@ -1,0 +1,215 @@
+;	LSX-Dodgers MZ-2500  環境変数のコマンド SET / ENV (オーバーレイ 0 に入る。M25OVL.ASM のスタブから呼ぶ)
+;	表の操作(ENVFIND など)と $ 展開、_GENV は常駐側(M25ENV.ASM)。
+NMBUF	EQU	RFNAME
+
+;	HL = 表の終端 (最後の 0) の位置
+ENVEND:
+	LD	HL,ENVBUF
+EE1:
+	LD	A,(HL)
+	OR	A
+	RET	Z
+EE2:
+	LD	A,(HL)
+	INC	HL
+	OR	A
+	JR	NZ,EE2
+	JR	EE1
+
+;	HL=エントリ先頭 を表から消す
+ENVDEL:
+	LD	D,H
+	LD	E,L
+ED1:
+	LD	A,(HL)
+	INC	HL
+	OR	A
+	JR	NZ,ED1
+	PUSH	DE
+	PUSH	HL
+	CALL	ENVEND
+	INC	HL
+	POP	DE
+	OR	A
+	SBC	HL,DE
+	LD	B,H
+	LD	C,L
+	EX	DE,HL
+	POP	DE
+	LDIR
+	RET
+
+STRLEN:
+	LD	BC,0
+SL1:
+	LD	A,(HL)
+	OR	A
+	RET	Z
+	INC	HL
+	INC	BC
+	JR	SL1
+
+;	ENV : 一覧
+C_ENV:
+	LD	HL,ENVBUF
+CE1:
+	LD	A,(HL)
+	OR	A
+	JR	Z,CE9
+CE2:
+	LD	A,(HL)
+	INC	HL
+	OR	A
+	JR	Z,CE3
+	PUSH	HL
+	CALL	MSG_A
+	POP	HL
+	JR	CE2
+CE3:
+	PUSH	HL
+	CALL	LTNL
+	POP	HL
+	JR	CE1
+CE9:
+	AND	A
+	RET
+
+;	SET            : 一覧 (ENV と同じ)
+;	SET NAME=値    : 設定 (前後の "" は外す、末尾の空白は落とす)
+;	SET NAME=      : 削除
+C_SET:
+	CALL	SPCUT
+	CP	021H
+	JR	C,C_ENV
+	LD	HL,NMBUF
+	LD	B,16
+CS1:
+	LD	A,(DE)
+	CP	'='
+	JR	Z,CS3
+	CP	021H
+	JP	C,CSBAD
+	CALL	ISNM
+	JP	C,CSBAD
+	INC	DE
+	LD	(HL),A
+	INC	HL
+	DJNZ	CS1
+	JP	CSBAD
+CS3:
+	XOR	A
+	LD	(HL),A
+	LD	A,(NMBUF)
+	OR	A
+	JP	Z,CSBAD
+	INC	DE
+	EX	DE,HL
+	LD	(EVP),HL
+	LD	BC,0
+CS4:
+	LD	A,(HL)
+	CP	0DH
+	JR	Z,CS5
+	OR	A
+	JR	Z,CS5
+	INC	HL
+	INC	BC
+	JR	CS4
+CS5:
+	LD	A,B
+	OR	C
+	JR	Z,CS6
+	DEC	HL
+	LD	A,(HL)
+	CP	020H
+	JR	NZ,CS6
+	DEC	BC
+	JR	CS5
+CS6:
+	LD	HL,(EVP)
+	LD	A,(HL)
+	CP	022H
+	JR	NZ,CS7
+	LD	A,B
+	OR	A
+	JR	NZ,CS6A
+	LD	A,C
+	CP	2
+	JR	C,CS7
+CS6A:
+	PUSH	HL
+	ADD	HL,BC
+	DEC	HL
+	LD	A,(HL)
+	POP	HL
+	CP	022H
+	JR	NZ,CS7
+	INC	HL
+	LD	(EVP),HL
+	DEC	BC
+	DEC	BC
+CS7:
+	LD	(EVL),BC
+	LD	HL,NMBUF
+	CALL	ENVFIND
+	CALL	NC,ENVDEL
+	LD	BC,(EVL)
+	LD	A,B
+	OR	C
+	JR	Z,CSOK
+	LD	HL,NMBUF
+	CALL	STRLEN
+	INC	BC
+	LD	HL,(EVL)
+	ADD	HL,BC
+	EX	DE,HL			;DE=名前+'='+値の長さ
+	CALL	ENVEND
+	PUSH	HL
+	ADD	HL,DE
+	INC	HL
+	INC	HL
+	LD	BC,ENVBUF+ENVSZ+1
+	OR	A
+	SBC	HL,BC
+	POP	HL
+	JR	NC,CSFULL
+	EX	DE,HL			;DE=書き込み位置
+	LD	HL,NMBUF
+CSW:
+	LD	A,(HL)
+	OR	A
+	JR	Z,CSW9
+	LD	(DE),A
+	INC	HL
+	INC	DE
+	JR	CSW
+CSW9:
+	LD	A,'='
+	LD	(DE),A
+	INC	DE
+	LD	HL,(EVP)
+	LD	BC,(EVL)
+	LDIR
+	XOR	A
+	LD	(DE),A
+	INC	DE
+	LD	(DE),A
+CSOK:
+	AND	A
+	RET
+CSFULL:
+	LD	HL,ENVFMSG
+	JR	CSMSG
+CSBAD:
+	LD	HL,ENVUMSG
+CSMSG:
+	CALL	MSX
+	AND	A
+	RET
+ENVUMSG:
+	DEFM	"usage: set NAME=value"
+	DB	3,0
+ENVFMSG:
+	DEFM	"Environment full"
+	DB	3,0
+

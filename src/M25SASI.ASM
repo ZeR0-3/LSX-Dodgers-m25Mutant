@@ -1,0 +1,222 @@
+;	LSX-Dodgers MZ-2500 : H: SASI ハードディスク (MZ-1E30 互換 A4h/A5h)
+;	DPBドライバの呼び出し規約: IX=DPB B=セクタ数 CDE=セクタ番号(512B単位, パーティション内) HL=アドレス
+;	                    戻り値   CF=0 CDE=次のセクタ HL=次のアドレス B=0 / CF=1 A=エラー(SASIステータス、80h=タイムアウト)
+;
+;	SASIは256B/ブロック。論理セクタ n = ブロック (SASBASE + 2n) と +1 の2ブロック。READ(6)/WRITE(6) をブロック数2で発行する。
+;	バス: ID0固定(データバス bit0)。A4h=データ、A5h=選択/ステータス(読み: bit7=REQ bit5=BSY bit3=C/D bit2=I/O)。
+;	A4hのアクセスでACKは自動で出る(エミュレータのモデル)。実機のMZ-1E30では未確認。
+
+SASBASE:	DB	0,0,0		;パーティション先頭ブロック(LAD) 下位,中,上位(5bit)。INIT(SASINI)が設定
+SASBOOT:	DB	0		;HDDから起動したら7(H:)。INITがカレントドライブにする
+SASOP:		DB	0		;08h=READ 0Ah=WRITE
+SASCNT:		DB	0
+SASLBA:		DB	0,0,0
+SASST:		DB	0
+
+SASRD:
+	LD	A,008H
+	JR	SASGO
+SASWT:
+	LD	A,00AH
+SASGO:
+	LD	(SASOP),A
+	LD	A,B
+	LD	(SASCNT),A
+SASLP:
+	PUSH	DE
+	PUSH	BC
+	PUSH	HL
+	LD	A,E
+	ADD	A,A
+	LD	E,A
+	LD	A,D
+	RLA
+	LD	D,A
+	LD	A,C
+	RLA
+	LD	C,A			;CDE*2
+	LD	A,(SASBASE)
+	ADD	A,E
+	LD	(SASLBA),A
+	LD	A,(SASBASE+1)
+	ADC	A,D
+	LD	(SASLBA+1),A
+	LD	A,(SASBASE+2)
+	ADC	A,C
+	AND	01FH
+	LD	(SASLBA+2),A
+	POP	HL
+	CALL	SASXFR			;HL 進む。CF=1 でエラー(A=コード)
+	POP	BC
+	POP	DE
+	RET	C
+	INC	DE
+	LD	A,D
+	OR	E
+	JR	NZ,SASN1
+	INC	C
+SASN1:
+	LD	A,(SASCNT)
+	DEC	A
+	LD	(SASCNT),A
+	JR	NZ,SASLP
+	LD	B,0
+	AND	A
+	RET
+
+SASXFR:
+	CALL	SASSEL			;選択+コマンド6バイト
+	RET	C
+	LD	A,(SASOP)
+	CP	00AH
+	JR	Z,SASW
+	CALL	SASRB
+	JR	C,SASERR
+	CALL	SASRB
+	JR	C,SASERR
+	JR	SASEND
+SASW:
+	CALL	SASWB
+	JR	C,SASERR
+	CALL	SASWB
+	JR	C,SASERR
+SASEND:
+	JP	SASSTA
+SASERR:					;データ転送の途中でステータスフェーズになった: 読み捨てて失敗にする
+	CALL	SASSTA
+	LD	A,(SASST)
+	OR	A
+	JR	NZ,SASER1
+	LD	A,0FFH
+SASER1:
+	SCF
+	RET
+
+SASRB:					;256バイト読む。途中でC/D(=ステータス)になったら CF=1
+	LD	B,0
+SRB1:
+	IN	A,(0A5H)
+	LD	C,A
+	AND	0C0H
+	CP	080H
+	JR	NZ,SRB1			;REQ=1 かつ ACK=0 を待つ
+	LD	A,C
+	AND	008H
+	JR	NZ,SRBE
+	IN	A,(0A4H)
+	LD	(HL),A
+	INC	HL
+	DJNZ	SRB1
+	AND	A
+	RET
+SRBE:
+	SCF
+	RET
+
+SASWB:					;256バイト書く
+	LD	B,0
+SWB1:
+	IN	A,(0A5H)
+	LD	C,A
+	AND	0C0H
+	CP	080H
+	JR	NZ,SWB1
+	LD	A,C
+	AND	008H
+	JR	NZ,SRBE
+	LD	A,(HL)
+	OUT	(0A4H),A
+	INC	HL
+	DJNZ	SWB1
+	AND	A
+	RET
+
+SASWQ:					;REQ待ち。タイムアウトで CF=1 (BC,A 破壊)
+	LD	BC,0
+SWQ1:
+	IN	A,(0A5H)
+	AND	0C0H
+	CP	080H
+	RET	Z			;REQ=1 かつ ACK=0 (CF=0)
+	DEC	BC
+	LD	A,B
+	OR	C
+	JR	NZ,SWQ1
+	LD	A,080H
+	SCF
+	RET
+
+SASWC:					;A=コマンドバイトを送る
+	LD	D,A
+	CALL	SASWQ
+	RET	C
+	LD	A,D
+	OUT	(0A4H),A
+	AND	A
+	RET
+
+SASSEL:					;バスが空くのを待って ID0 を選択し、コマンド(op, LBA上位/中/下位, ブロック数2, 0)を送る
+	LD	BC,0
+SSL1:
+	IN	A,(0A5H)
+	AND	020H
+	JR	Z,SSL2
+	DEC	BC
+	LD	A,B
+	OR	C
+	JR	NZ,SSL1
+	JR	SSLTMO
+SSL2:
+	LD	A,001H
+	OUT	(0A4H),A		;データバス = ID0
+	LD	A,020H
+	OUT	(0A5H),A		;SEL
+	LD	BC,0
+SSL3:
+	IN	A,(0A5H)
+	AND	020H
+	JR	NZ,SSL4			;BSY
+	DEC	BC
+	LD	A,B
+	OR	C
+	JR	NZ,SSL3
+	XOR	A
+	OUT	(0A5H),A
+SSLTMO:
+	LD	A,080H
+	SCF
+	RET
+SSL4:
+	XOR	A
+	OUT	(0A5H),A		;SEL解除
+	LD	A,(SASOP)
+	CALL	SASWC
+	RET	C
+	LD	A,(SASLBA+2)
+	CALL	SASWC
+	RET	C
+	LD	A,(SASLBA+1)
+	CALL	SASWC
+	RET	C
+	LD	A,(SASLBA)
+	CALL	SASWC
+	RET	C
+	LD	A,2
+	CALL	SASWC
+	RET	C
+	XOR	A
+	JP	SASWC
+
+SASSTA:					;ステータス+メッセージを読む。ステータス非0なら CF=1 (A=ステータス)
+	CALL	SASWQ
+	RET	C
+	IN	A,(0A4H)
+	LD	(SASST),A
+	CALL	SASWQ
+	RET	C
+	IN	A,(0A4H)
+	LD	A,(SASST)
+	OR	A
+	RET	Z
+	SCF
+	RET

@@ -1,0 +1,1215 @@
+;	LSX-Dodgers MZ-2500 : MSX-DOS2 ファイルハンドル層 (Phase 1)
+;	BDOS 43h-4Bh : _OPEN _CREATE _CLOSE _ENSURE _DUP _READ _WRITE _SEEK _IOCTL
+;	ハンドル 0,1,2 = コンソール(CON)。ファイルのハンドルは FCB を内部に持ち、
+;	LSX標準の「ランダムブロック読み書き(26h/27h)」(レコードサイズ1=バイト位置)で実現する。
+;	エラー番号は MSX-DOS2 のもの。成功は A=0 (キャリーは使わない)。
+;	呼び出し: LDOS.ASM の _DOS2 に HND_DOS2 を差し込む(build.py)。入口で A を保存するため
+;	IO_BDOS(M25BANK.ASM) が (HND_A) に A を書く。
+
+NH		EQU	10		;ハンドル数 (0..9)
+S_POS		EQU	40		;+40..43 ファイルポインタ(32bit)
+S_REF		EQU	44		;参照数 (0=空き)
+S_MODE		EQU	45		;bit0=書ける bit1=読める
+H_CON		EQU	080H		;HTAB の値: コンソール
+H_FREE		EQU	0FFH		;HTAB の値: 未使用
+
+E_DISK		EQU	0FDH
+E_NOFIL		EQU	0D7H
+E_IFNM		EQU	0DAH
+E_DKFUL		EQU	0D4H
+E_DIRX		EQU	0CCH
+E_FILEX		EQU	0CBH
+E_EOF		EQU	0C7H
+E_ACCV		EQU	0C6H
+E_NHAND		EQU	0C4H
+E_IHAND		EQU	0C3H
+E_NOPEN		EQU	0C2H
+E_ISBFN		EQU	0B8H
+
+HND_A:		DB	0		;BDOS呼び出し時のA
+ARG_DE:		DW	0
+ARG_HL:		DW	0
+ARG_B:		DW	0		;下位=C 上位=B
+CRFLG:		DB	0
+NEWH:		DB	0
+NEWS:		DB	0
+RW_N:		DW	0
+SAVDTA:		DW	0
+CLLEN:		DB	0		;コンソール行バッファの残り
+CLPOS:		DB	0
+HTAB:		DB	H_CON,H_CON,H_CON,H_FREE,H_FREE,H_FREE,H_FREE,H_FREE,H_FREE,H_FREE
+SCRFLG:		DB	0		;1:標準出力のリダイレクトを一時的に無効(画面へ出す)
+SCRSAV:		DB	0
+OUTN:		DB	0		;リダイレクト先への出力バッファの文字数
+RMODE:		DB	0		;0:< 1:> 2:>>
+INBYTE:		DB	0
+LBUF:		DB	126,0
+LBUFD:		DS	130
+
+;	BDOS 43h-4Bh の振り分け。A=関数番号。レジスタは呼び出し元のまま
+HND_DOS2:
+	CP	062H
+	JP	Z,H_TERM
+	CP	06BH
+	JP	Z,H_GENV
+	CP	0E0H
+	JP	NC,RES_DOS
+	CP	043H
+	JP	C,_DOS2B
+	CP	04CH
+	JP	NC,_DOS2B
+	LD	(ARG_HL),HL
+	LD	(ARG_DE),DE
+	LD	(ARG_B),BC		;下位=C, 上位=B のうち B を使う(ARG_B+1)
+	SUB	043H
+	PUSH	HL
+	LD	HL,HTBL
+	ADD	A,A
+	ADD	A,L
+	LD	L,A
+	JR	NC,HD1
+	INC	H
+HD1:
+	LD	A,(HL)
+	INC	HL
+	LD	H,(HL)
+	LD	L,A
+	EX	(SP),HL
+	RET
+
+HTBL:
+	DW	H_OPEN,H_CREATE,H_CLOSE,H_ENSURE,H_DUP,H_READ,H_WRITE,H_SEEK,H_IOCTL
+
+;	ハンドルBの種類を調べる。CF=1:A=エラー  CF=0:A=HTABの値(<80Hならスロット番号でIY=スロット)
+GETH:
+	LD	A,(ARG_B+1)
+	LD	B,A
+GETH0:
+	CP	NH
+	JR	C,GH1
+	LD	A,E_IHAND
+	SCF
+	RET
+GH1:
+	LD	E,B
+	LD	D,0
+	LD	HL,HTAB
+	ADD	HL,DE
+	LD	A,(HL)
+	CP	H_FREE
+	JR	NZ,GH2
+	LD	A,E_NOPEN
+	SCF
+	RET
+GH2:
+	CP	H_CON
+	RET	NC			;コンソール (CF=0)
+	PUSH	AF
+	CALL	OUTFLUSH		;バッファ済みの標準出力を先に書き出す
+	POP	AF
+	PUSH	AF
+	CALL	SLOTADR
+	POP	AF
+	AND	A
+	RET
+
+;	A=スロット番号 -> IY=スロットのアドレス (HL,DE破壊)
+SLOTADR:
+	LD	L,A
+	LD	H,0
+	LD	E,L
+	LD	D,H
+	ADD	HL,HL
+	ADD	HL,DE			;*3
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL			;*48
+	LD	DE,HSLOTS
+	ADD	HL,DE
+	PUSH	HL
+	POP	IY
+	RET
+
+;	最小の空きハンドルを探す。CF=0:B=ハンドル  CF=1:A=エラー
+FINDH:
+	LD	HL,HTAB
+	LD	B,0
+FH1:
+	LD	A,(HL)
+	CP	H_FREE
+	JR	Z,FH2
+	INC	HL
+	INC	B
+	LD	A,B
+	CP	NH
+	JR	C,FH1
+	LD	A,E_NHAND
+	SCF
+	RET
+FH2:
+	AND	A
+	RET
+
+;	空きスロットを探す。CF=0:A=番号,IY=スロット  CF=1:A=エラー
+FINDS:
+	LD	B,0
+FS1:
+	LD	A,B
+	CALL	SLOTADR
+	LD	A,(IY+S_REF)
+	OR	A
+	JR	Z,FS2
+	INC	B
+	LD	A,B
+	CP	NSLOT
+	JR	C,FS1
+	LD	A,E_NHAND
+	SCF
+	RET
+FS2:
+	LD	A,B
+	AND	A
+	RET
+
+;	スロットを消去してパス(ARG_DE)をFCBに解析する。IY=スロット。CF=1:A=エラー
+PARSEFCB:
+	PUSH	IY
+	POP	HL
+	LD	D,H
+	LD	E,L
+	INC	DE
+	LD	(HL),0
+	LD	BC,SLOTSZ-1
+	LDIR
+	PUSH	IY
+	POP	HL
+	LD	DE,(ARG_DE)
+	PUSH	IY
+	CALL	_SYS29			;パス解析 -> FCB先頭16バイト
+	POP	IY
+	LD	A,(IY+1)
+	CP	020H
+	JR	NZ,PF1
+	LD	A,E_IFNM
+	SCF
+	RET
+PF1:
+	AND	A
+	RET
+
+;	IYのFCBに対してBDOS関数Cを呼ぶ
+FCBCALL:
+	PUSH	IY
+	PUSH	IY
+	POP	DE
+	CALL	BDOS0
+	POP	IY
+	RET
+
+;	_OPEN / _CREATE
+H_OPEN:
+	XOR	A
+	JR	HOC
+H_CREATE:
+	LD	A,1
+HOC:
+	LD	(CRFLG),A
+	CALL	FINDH
+	RET	C
+	LD	A,B
+	LD	(NEWH),A
+	CALL	FINDS
+	RET	C
+	LD	(NEWS),A
+	CALL	PARSEFCB
+	RET	C
+	LD	A,(CRFLG)
+	OR	A
+	JR	NZ,HC1
+;				open
+	LD	C,00FH
+	CALL	FCBCALL
+	LD	A,(IY+28)
+	CP	0FFH
+	LD	A,E_NOFIL
+	SCF
+	RET	NZ
+	BIT	4,(IY+13)		;ディレクトリ
+	JR	Z,HOK
+	LD	A,E_DIRX
+	SCF
+	RET
+HC1:
+;				create : create-new なら存在確認
+	LD	A,(ARG_B+1)
+	BIT	7,A
+	JR	Z,HC2
+	LD	C,00FH
+	CALL	FCBCALL
+	LD	A,(IY+28)
+	CP	0FFH
+	JR	NZ,HC2
+	LD	C,010H
+	CALL	FCBCALL
+	LD	A,E_FILEX
+	SCF
+	RET
+HC2:
+;				既存を削除してから作成
+	CALL	PARSEFCB
+	RET	C
+	LD	C,013H
+	CALL	FCBCALL
+	CALL	PARSEFCB
+	RET	C
+	LD	C,016H
+	CALL	FCBCALL
+	LD	A,(IY+28)
+	CP	0FFH
+	JR	Z,HOK
+	LD	A,E_DKFUL
+	SCF
+	RET
+HOK:
+	XOR	A
+	LD	(IY+14),1		;レコードサイズ=1 (バイト位置)
+	LD	(IY+15),A
+	LD	(IY+32),A
+	LD	(IY+S_POS),A
+	LD	(IY+S_POS+1),A
+	LD	(IY+S_POS+2),A
+	LD	(IY+S_POS+3),A
+	LD	(IY+S_REF),1
+	LD	A,(HND_A)		;open mode: b0=書けない b1=読めない
+	AND	3
+	XOR	3
+	LD	(IY+S_MODE),A
+	LD	A,(NEWH)
+	LD	E,A
+	LD	D,0
+	LD	HL,HTAB
+	ADD	HL,DE
+	LD	A,(NEWS)
+	LD	(HL),A
+	LD	A,E
+	LD	B,A
+	XOR	A
+	RET
+
+;	_CLOSE
+H_CLOSE:
+	CALL	GETH
+	RET	C
+	LD	HL,HTAB
+	LD	E,B
+	LD	D,0
+	ADD	HL,DE
+	LD	(HL),H_FREE
+	CP	H_CON
+	JR	NC,HCL9
+	DEC	(IY+S_REF)
+	JR	NZ,HCL9
+	LD	C,010H
+	CALL	FCBCALL
+HCL9:
+	XOR	A
+	RET
+
+;	_ENSURE : ディレクトリを更新する(LSXのクローズは閉じた後もFCBを読みモードで使える)
+H_ENSURE:
+	CALL	GETH
+	RET	C
+	CP	H_CON
+	JR	NC,HCL9
+	BIT	0,(IY+S_MODE)
+	JR	Z,HCL9
+	LD	C,010H
+	CALL	FCBCALL
+	XOR	A
+	RET
+
+;	_DUP
+H_DUP:
+	CALL	GETH
+	RET	C
+	LD	(NEWS),A
+	CALL	FINDH
+	RET	C
+	LD	A,(NEWS)
+	CP	H_CON
+	JR	NC,HDU1
+	INC	(IY+S_REF)
+HDU1:
+	LD	E,B
+	LD	D,0
+	LD	HL,HTAB
+	ADD	HL,DE
+	LD	A,(NEWS)
+	LD	(HL),A
+	XOR	A
+	RET
+
+;	_READ  B=ハンドル DE=バッファ HL=バイト数 -> HL=読めたバイト数
+H_READ:
+	CALL	GETH
+	RET	C
+	CP	H_CON
+	JP	NC,CONREAD
+	BIT	1,(IY+S_MODE)
+	LD	A,E_ACCV
+	SCF
+	RET	Z
+;				残り = size - pos
+	LD	L,(IY+16)
+	LD	H,(IY+17)
+	LD	C,(IY+S_POS)
+	LD	B,(IY+S_POS+1)
+	AND	A
+	SBC	HL,BC
+	PUSH	HL
+	LD	L,(IY+18)
+	LD	H,(IY+19)
+	LD	C,(IY+S_POS+2)
+	LD	B,(IY+S_POS+3)
+	SBC	HL,BC
+	JR	C,HR_EOF0
+	POP	DE			;DE=残りの下位16bit
+	LD	BC,(ARG_HL)		;BC=要求
+	LD	A,H
+	OR	L
+	JR	NZ,HR_N1		;残りが64KB以上 -> 要求通り
+	LD	H,B
+	LD	L,C
+	AND	A
+	SBC	HL,DE			;要求 - 残り
+	JR	C,HR_N1			;要求が小さい
+	LD	B,D
+	LD	C,E			;残りの方が小さい
+HR_N1:
+	LD	H,B
+	LD	L,C
+	LD	A,H
+	OR	L
+	JR	Z,HR_ZERO
+	LD	(RW_N),HL
+	LD	C,027H
+	CALL	RWDO
+	RET	C
+	LD	HL,(RW_N)
+	XOR	A
+	RET
+HR_ZERO:
+	LD	HL,(ARG_HL)
+	LD	A,H
+	OR	L
+	LD	HL,0
+	LD	A,0
+	RET	Z			;要求が0なら成功
+	LD	A,E_EOF
+	SCF
+	RET
+HR_EOF0:
+	POP	HL
+	LD	HL,0
+	LD	A,E_EOF
+	SCF
+	RET
+
+;	_WRITE  B=ハンドル DE=バッファ HL=バイト数 -> HL=書けたバイト数
+H_WRITE:
+	CALL	GETH
+	RET	C
+	CP	H_CON
+	JP	NC,CONWRITE
+	BIT	0,(IY+S_MODE)
+	LD	A,E_ACCV
+	SCF
+	RET	Z
+	LD	HL,(ARG_HL)
+	LD	A,H
+	OR	L
+	RET	Z			;0バイト: A=0,HL=0
+	LD	(RW_N),HL
+	LD	C,026H
+	CALL	RWDO
+	RET	C
+	LD	HL,(RW_N)
+	XOR	A
+	RET
+
+;	26h/27h の共通部。IY=スロット RW_N=バイト数 ARG_DE=バッファ C=関数。成功で位置を進める
+;	失敗: CF=1 A=エラー
+RWDO:
+	PUSH	BC
+	LD	(IY+14),1
+	LD	(IY+15),0
+	LD	(IY+32),0
+	LD	A,(IY+S_POS)
+	LD	(IY+33),A
+	LD	A,(IY+S_POS+1)
+	LD	(IY+34),A
+	LD	A,(IY+S_POS+2)
+	LD	(IY+35),A
+	LD	A,(IY+S_POS+3)
+	LD	(IY+36),A
+	LD	HL,(_DTA)
+	LD	(SAVDTA),HL
+	LD	HL,(ARG_DE)
+	LD	(_DTA),HL
+	POP	BC
+	PUSH	IY
+	PUSH	IY
+	POP	DE
+	LD	HL,(RW_N)
+	CALL	BDOS0
+	POP	IY
+	PUSH	AF
+	LD	HL,(SAVDTA)
+	LD	(_DTA),HL
+	POP	AF
+	JR	C,RWERR
+	LD	HL,(RW_N)
+	LD	E,(IY+S_POS)
+	LD	D,(IY+S_POS+1)
+	ADD	HL,DE
+	LD	(IY+S_POS),L
+	LD	(IY+S_POS+1),H
+	JR	NC,RW9
+	INC	(IY+S_POS+2)
+	JR	NZ,RW9
+	INC	(IY+S_POS+3)
+RW9:
+	XOR	A
+	RET
+RWERR:
+	LD	A,E_DISK
+	SCF
+	RET
+
+;	_SEEK  B=ハンドル A=方法(0:先頭 1:現在 2:末尾) DE:HL=符号付きオフセット -> DE:HL=新しい位置
+H_SEEK:
+	CALL	GETH
+	RET	C
+	CP	H_CON
+	JR	C,HS1
+	LD	DE,0
+	LD	HL,0
+	XOR	A
+	RET
+HS1:
+	LD	A,(HND_A)
+	LD	L,0
+	LD	H,0
+	LD	C,0
+	LD	B,0			;BC:HL ではなく D'E' 代わりに下で組む
+	OR	A
+	JR	Z,HS_BASE0
+	CP	1
+	JR	Z,HS_BASE1
+;				2: 末尾 = ファイルサイズ
+	LD	L,(IY+16)
+	LD	H,(IY+17)
+	LD	E,(IY+18)
+	LD	D,(IY+19)
+	JR	HS_ADD
+HS_BASE1:
+	LD	L,(IY+S_POS)
+	LD	H,(IY+S_POS+1)
+	LD	E,(IY+S_POS+2)
+	LD	D,(IY+S_POS+3)
+	JR	HS_ADD
+HS_BASE0:
+	LD	H,A
+	LD	L,A
+	LD	D,A
+	LD	E,A
+HS_ADD:
+;				DE:HL = base,  新しい位置 = base + (ARG_DE:ARG_HL)
+	PUSH	HL
+	LD	HL,(ARG_HL)
+	POP	BC
+	ADD	HL,BC
+	PUSH	HL			;低16bit
+	LD	HL,(ARG_DE)
+	LD	B,H
+	LD	C,L
+	LD	H,D
+	LD	L,E
+	ADC	HL,BC			;高16bit (低からの桁上がりを含む)
+	EX	DE,HL
+	POP	HL
+	BIT	7,D
+	JR	Z,HS2
+	LD	HL,0			;負になる場合は先頭
+	LD	DE,0
+HS2:
+	LD	(IY+S_POS),L
+	LD	(IY+S_POS+1),H
+	LD	(IY+S_POS+2),E
+	LD	(IY+S_POS+3),D
+	XOR	A
+	RET
+
+;	_IOCTL  B=ハンドル A=サブ機能 -> DE=結果
+H_IOCTL:
+	CALL	GETH
+	RET	C
+	PUSH	AF
+	LD	A,(HND_A)
+	LD	C,A
+	POP	AF
+	LD	B,A			;B=種類
+	LD	A,C
+	OR	A
+	JR	NZ,HI1
+;				0: 状態
+	LD	A,B
+	CP	H_CON
+	JR	C,HI_FILE
+	LD	DE,000A3H		;デバイス, ASCII, 入力+出力
+	XOR	A
+	RET
+HI_FILE:
+	LD	A,(IY+0)
+	OR	A
+	JR	NZ,HIF1
+	LD	A,(_DVSW)
+	INC	A
+HIF1:
+	DEC	A
+	AND	03FH
+	LD	E,A
+	LD	D,0
+	LD	L,(IY+S_POS)
+	LD	H,(IY+S_POS+1)
+	LD	C,(IY+16)
+	LD	B,(IY+17)
+	AND	A
+	SBC	HL,BC			;pos - size
+	LD	L,(IY+S_POS+2)
+	LD	H,(IY+S_POS+3)
+	LD	C,(IY+18)
+	LD	B,(IY+19)
+	SBC	HL,BC
+	JR	C,HIF2			;pos < size
+	LD	A,E
+	OR	040H			;ポインタが末尾以降 -> EOF
+	LD	E,A
+HIF2:
+	XOR	A
+	RET
+HI1:
+	CP	0F0H
+	JR	Z,HI_KEY		;LSX独自: キーボードから直接1文字(標準入力のリダイレクトを無視)。E=文字
+	CP	1
+	JR	Z,HI_OK			;ASCII/バイナリ切替は受け付けるだけ
+	CP	2
+	JR	Z,HI_RDY
+	CP	3
+	JR	Z,HI_RDY
+	CP	4
+	JR	NZ,HI_BAD
+	LD	D,LINE
+	LD	A,(WIDTHV)
+	LD	E,A
+	XOR	A
+	RET
+HI_KEY:
+	PUSH	IY
+	CALL	FLGET
+	POP	IY
+	LD	E,A
+	XOR	A
+	RET
+HI_RDY:
+	LD	E,0FFH
+HI_OK:
+	XOR	A
+	RET
+HI_BAD:
+	LD	A,E_ISBFN
+	SCF
+	RET
+
+;	---- コンソール ----
+;	_WRITE  DE=バッファ HL=バイト数
+CONWRITE:
+	LD	A,(SCRFLG)
+	LD	(SCRSAV),A
+	LD	A,1
+	LD	(SCRFLG),A
+	LD	HL,(ARG_HL)
+	LD	DE,(ARG_DE)
+CW1:
+	LD	A,H
+	OR	L
+	JR	Z,CW9
+	PUSH	HL
+	PUSH	DE
+	LD	A,(DE)
+	LD	E,A
+	LD	C,2
+	CALL	BDOS0
+	POP	DE
+	POP	HL
+	INC	DE
+	DEC	HL
+	JR	CW1
+CW9:
+	LD	A,(SCRSAV)
+	LD	(SCRFLG),A
+	LD	HL,(ARG_HL)
+	XOR	A
+	RET
+
+;	_READ : 1行ずつ。CRで終わる行には CR,LF を付けて返す。要求が行より小さければ残りは次回
+CONREAD:
+	LD	A,(SCRFLG)
+	LD	(SCRSAV),A
+	LD	A,1
+	LD	(SCRFLG),A
+	LD	A,1
+	LD	(EDT_EOFM),A
+	CALL	CONREAD0
+	PUSH	AF
+	XOR	A
+	LD	(EDT_EOFM),A
+	LD	A,(SCRSAV)
+	LD	(SCRFLG),A
+	POP	AF
+	RET
+CONREAD0:
+	LD	A,(CLLEN)
+	OR	A
+	JR	NZ,CR2
+;				新しい行を入力
+	LD	DE,LBUF
+	LD	A,126
+	LD	(DE),A
+	LD	C,0AH
+	CALL	BDOS0
+	LD	E,0DH
+	LD	C,2
+	CALL	BDOS0
+	LD	E,0AH
+	LD	C,2
+	CALL	BDOS0
+	LD	A,(EDT_EOFK)		;Ctrl-Z で終えた行: 空行ならEOF
+	OR	A
+	JR	Z,CR0
+	XOR	A
+	LD	(EDT_EOFK),A
+	LD	A,(LBUF+1)
+	OR	A
+	JR	NZ,CR0
+	LD	HL,0
+	LD	A,E_EOF
+	SCF
+	RET
+CR0:
+	LD	A,(LBUF+1)
+	LD	C,A
+	LD	B,0
+	CP	1
+	JR	NZ,CR1
+	LD	A,(LBUFD)
+	CP	01AH			;Ctrl-Z だけの行 -> EOF
+	JR	NZ,CR1
+	LD	HL,0
+	LD	A,E_EOF
+	SCF
+	RET
+CR1:
+	LD	HL,LBUFD
+	ADD	HL,BC
+	LD	(HL),0DH
+	INC	HL
+	LD	(HL),0AH
+	LD	A,C
+	ADD	A,2
+	LD	(CLLEN),A
+	XOR	A
+	LD	(CLPOS),A
+CR2:
+;				CLLEN バイトのうち要求分を返す
+	LD	A,(CLPOS)
+	LD	E,A
+	LD	D,0
+	LD	HL,LBUFD
+	ADD	HL,DE			;HL=読み出し位置
+	LD	BC,(ARG_HL)		;要求
+	LD	A,(CLLEN)
+	LD	E,A
+	LD	D,0			;DE=残り
+	LD	A,B
+	OR	A
+	JR	NZ,CR3			;要求が256以上 -> 残りが小さい
+	LD	A,C
+	CP	E
+	JR	C,CR4			;要求の方が小さい
+CR3:
+	LD	B,0
+	LD	C,E			;BC = 残り
+CR4:
+	PUSH	BC
+	LD	DE,(ARG_DE)
+	LDIR
+	POP	BC
+	LD	A,(CLLEN)
+	SUB	C
+	LD	(CLLEN),A
+	LD	A,(CLPOS)
+	ADD	A,C
+	LD	(CLPOS),A
+	LD	H,B
+	LD	L,C
+	XOR	A
+	RET
+
+;	COMMANDの先頭から呼ぶ : 開いているファイルを閉じ、ハンドルを初期状態に戻す
+HND_RESET:
+	XOR	A
+	LD	(SCRFLG),A
+	CALL	OUTFLUSH		;リダイレクト先へ出力バッファを書き出す
+	XOR	A
+	LD	(OUTN),A
+	LD	B,0
+HRS1:
+	LD	A,B
+	CALL	SLOTADR
+	LD	A,(IY+S_REF)
+	OR	A
+	JR	Z,HRS2
+	LD	(IY+S_REF),0		;先に空きにする(閉じるときのエラーで再入しても無限ループしない)
+	LD	C,010H
+	PUSH	BC
+	CALL	FCBCALL
+	POP	BC
+HRS2:
+	INC	B
+	LD	A,B
+	CP	NSLOT
+	JR	C,HRS1
+	LD	HL,HTAB
+	LD	B,NH
+HRS3:
+	LD	(HL),H_FREE
+	INC	HL
+	DJNZ	HRS3
+	LD	HL,HTAB
+	LD	(HL),H_CON
+	INC	HL
+	LD	(HL),H_CON
+	INC	HL
+	LD	(HL),H_CON
+	XOR	A
+	LD	(CLLEN),A
+	RET
+
+;	==== Phase 2: リダイレクト ====
+;	標準出力(ハンドル1)がファイルのとき、画面出力の最下層 _PRINT を HND_PRINT に差し替えてファイルへ書く。
+;	標準入力(ハンドル0)がファイルのとき、FLGET/INKEY/文字列入力/コンソール状態をファイル読みにする。
+;	ハンドルのテーブル HTAB が唯一の状態: HTAB[1]<80H ならファイル。
+
+;	_PRINT の差し替え。E=文字。リダイレクト中でなければ元の PRINT へ
+HND_PRINT:
+	LD	A,(SCRFLG)
+	OR	A
+	JP	NZ,PRINT
+	LD	A,(HTAB+1)
+	CP	H_CON
+	JP	NC,PRINT
+	PUSH	BC
+	PUSH	DE
+	PUSH	HL
+	LD	A,E
+	CP	3			;LSX内部の改行コード
+	JR	NZ,HPR1
+	LD	A,0DH
+	CALL	OUTCH
+	LD	A,0AH
+	JR	HPR2
+HPR1:
+	CP	020H
+	JR	NC,HPR2
+	CP	0DH
+	JR	Z,HPR2
+	CP	0AH
+	JR	Z,HPR2
+	CP	09H
+	JR	NZ,HPR9			;その他の制御コード(カーソル移動など)は捨てる
+HPR2:
+	CALL	OUTCH
+HPR9:
+	POP	HL
+	POP	DE
+	POP	BC
+	XOR	A
+	RET
+
+;	A=文字 を出力バッファへ。いっぱいなら書き出す (BC,DE,HL破壊)
+OUTCH:
+	LD	C,A
+	LD	A,(OUTN)
+	LD	E,A
+	LD	D,0
+	LD	HL,OUTBUF
+	ADD	HL,DE
+	LD	(HL),C
+	INC	A
+	LD	(OUTN),A
+	CP	128
+	RET	C
+
+;	出力バッファをファイルへ書き出す。レジスタとARG_DE/RW_Nは保存
+OUTFLUSH:
+	LD	A,(OUTN)
+	OR	A
+	RET	Z
+	PUSH	AF
+	PUSH	BC
+	PUSH	DE
+	PUSH	HL
+	PUSH	IY
+	LD	HL,(ARG_DE)
+	PUSH	HL
+	LD	HL,(RW_N)
+	PUSH	HL
+	LD	A,(OUTN)
+	LD	L,A
+	LD	H,0
+	LD	(RW_N),HL
+	XOR	A
+	LD	(OUTN),A
+	LD	A,(HTAB+1)
+	CP	H_CON
+	JR	NC,OF9			;もう閉じられている -> 捨てる
+	CALL	SLOTADR
+	LD	HL,OUTBUF
+	LD	(ARG_DE),HL
+	LD	A,(SCRFLG)
+	LD	(SCRSAV),A
+	LD	A,1
+	LD	(SCRFLG),A		;書き込みエラーの表示がバッファに戻らないように
+	LD	C,026H
+	CALL	RWDO
+	LD	A,(SCRSAV)
+	LD	(SCRFLG),A
+OF9:
+	POP	HL
+	LD	(RW_N),HL
+	POP	HL
+	LD	(ARG_DE),HL
+	POP	IY
+	POP	HL
+	POP	DE
+	POP	BC
+	POP	AF
+	RET
+
+;	IY=スロット : CF=1 ならポインタがファイルの末尾以降
+FEOF:
+	LD	L,(IY+S_POS)
+	LD	H,(IY+S_POS+1)
+	LD	C,(IY+16)
+	LD	B,(IY+17)
+	AND	A
+	SBC	HL,BC
+	LD	L,(IY+S_POS+2)
+	LD	H,(IY+S_POS+3)
+	LD	C,(IY+18)
+	LD	B,(IY+19)
+	SBC	HL,BC
+	CCF
+	RET
+
+;	標準入力(ファイル)から1バイト: A=バイト(末尾なら1AH)。BC,DE,HL,IY 破壊
+STDIN_BYTE:
+	LD	HL,(ARG_DE)
+	PUSH	HL
+	LD	HL,(RW_N)
+	PUSH	HL
+	LD	A,(HTAB)
+	CALL	SLOTADR
+	CALL	FEOF
+	LD	A,01AH
+	JR	C,SB9
+	LD	HL,INBYTE
+	LD	(ARG_DE),HL
+	LD	HL,1
+	LD	(RW_N),HL
+	LD	C,027H
+	CALL	RWDO
+	LD	A,01AH
+	JR	C,SB9
+	LD	A,(INBYTE)
+SB9:
+	POP	HL
+	LD	(RW_N),HL
+	POP	HL
+	LD	(ARG_DE),HL
+	RET
+
+;	CPM_CONIN(_SYS07) の差し替え
+HND_FLGET:
+	LD	A,(HTAB)
+	CP	H_CON
+	JP	NC,FLGET
+HF1:
+	PUSH	BC
+	PUSH	DE
+	PUSH	HL
+	PUSH	IY
+	CALL	STDIN_BYTE
+	POP	IY
+	POP	HL
+	POP	DE
+	POP	BC
+	OR	A
+	RET
+
+;	_SYS06 の入力側(E=FFH)の差し替え
+HND_INKEY:
+	LD	A,(HTAB)
+	CP	H_CON
+	JP	NC,_INKEY
+	JR	HF1
+
+;	_SYS0B(コンソール状態) の差し替え: 標準入力がファイルなら常に「入力あり」
+HND_SYS0B:
+	LD	A,(HTAB)
+	CP	H_CON
+	JP	NC,_SYS0B_ORG
+	LD	A,0FFH
+	RET
+
+;	_SYS0A(文字列入力) の差し替え。DE=バッファ
+HND_SYS0A:
+	LD	A,(HTAB)
+	CP	H_CON
+	JR	C,HS0A_F
+;				キーボード入力: エコーは標準出力がファイルでも画面へ出す(行の読み取りは画面から行う)
+	LD	A,(SCRFLG)
+	LD	(SCRSAV),A
+	LD	A,1
+	LD	(SCRFLG),A
+	CALL	_SYS0A_ORG
+	PUSH	AF
+	LD	A,(SCRSAV)
+	LD	(SCRFLG),A
+	POP	AF
+	RET
+HS0A_F:
+	PUSH	BC
+	PUSH	HL
+	PUSH	DE
+	PUSH	IY
+	LD	H,D
+	LD	L,E
+	LD	B,(HL)			;最大文字数
+	INC	HL
+	INC	HL
+	LD	C,0
+HS1L:
+	PUSH	BC
+	PUSH	HL
+	CALL	STDIN_BYTE
+	POP	HL
+	POP	BC
+	CP	0AH
+	JR	NZ,HS2L
+	LD	A,C
+	OR	A
+	JR	Z,HS1L			;行頭のLF(前行のCRLFの残り)は読み飛ばす
+	JR	HSEND
+HS2L:
+	CP	0DH
+	JR	Z,HSEND
+	CP	01AH
+	JR	NZ,HS3L
+	LD	A,C
+	OR	A
+	JR	NZ,HSEND		;データがあれば行として返す
+	LD	(HL),01AH		;末尾: 1AHだけの行
+	INC	HL
+	INC	C
+	JR	HSEND
+HS3L:
+	LD	(HL),A
+	INC	HL
+	INC	C
+	LD	A,C
+	CP	B
+	JR	C,HS1L
+HSEND:
+	LD	(HL),0DH
+	POP	IY
+	POP	DE
+	INC	DE
+	LD	A,C
+	LD	(DE),A
+	DEC	DE
+	POP	HL
+	POP	BC
+	AND	A
+	RET
+
+;	画面専用に切り替える(エラー表示用。COMMANDの先頭で戻る)
+HND_SCR:
+	LD	A,1
+	LD	(SCRFLG),A
+	RET
+
+;	---- コマンド行の > >> < を解釈する ----
+;	DTA1+2 のコマンド行(CRまたは0で終わる)を調べ、リダイレクトを設定し、その部分を空白で潰す。
+;	戻り: CF=1 ならコマンドを実行しない(エラー表示済み)
+HND_REDIR:
+	LD	HL,DTA1+2
+	LD	C,0			;C=引用符の中か
+RD1:
+	LD	A,(HL)
+	CP	0DH
+	JR	Z,RDEND
+	OR	A
+	JR	Z,RDEND
+	CP	022H			;"
+	JR	NZ,RD2
+	LD	A,C
+	XOR	1
+	LD	C,A
+	JR	RDNXT
+RD2:
+	LD	A,C
+	OR	A
+	JR	NZ,RDNXT
+	LD	A,(HL)
+	CP	'>'
+	JR	Z,RDOUT
+	CP	'<'
+	JR	Z,RDIN
+RDNXT:
+	INC	HL
+	JR	RD1
+RDEND:
+	AND	A
+	RET
+RDOUT:
+	LD	(HL),020H
+	INC	HL
+	LD	A,1
+	LD	(RMODE),A
+	LD	A,(HL)
+	CP	'>'
+	JR	NZ,RD3
+	LD	(HL),020H
+	INC	HL
+	LD	A,2
+	LD	(RMODE),A
+	JR	RD3
+RDIN:
+	LD	(HL),020H
+	INC	HL
+	XOR	A
+	LD	(RMODE),A
+RD3:
+;				空白を飛ばしてファイル名を RFNAME へ(元の位置は空白で潰す)
+	LD	A,(HL)
+	CP	020H
+	JR	NZ,RD4
+	INC	HL
+	JR	RD3
+RD4:
+	LD	DE,RFNAME
+	LD	B,0
+RD5:
+	LD	A,(HL)
+	CP	021H
+	JR	C,RD6			;空白・CR・0
+	CP	'>'
+	JR	Z,RD6
+	CP	'<'
+	JR	Z,RD6
+	LD	(DE),A
+	INC	DE
+	LD	(HL),020H
+	INC	HL
+	INC	B
+	LD	A,B
+	CP	60
+	JR	C,RD5
+RD6:
+	XOR	A
+	LD	(DE),A
+	LD	A,B
+	OR	A
+	JR	Z,RDBAD			;ファイル名が無い
+	PUSH	HL
+	CALL	RDOPEN
+	POP	HL
+	JR	C,RDBAD
+	LD	C,0
+	JR	RD1
+RDBAD:
+	CALL	HND_SCR
+	LD	HL,RDMSG
+	CALL	MSX
+	SCF
+	RET
+RDMSG:
+	DEFM	"Cannot open redirect file"
+	DB	3,0
+
+;	RMODE/RFNAME に従ってファイルを開き、ハンドル0または1に割り当てる。CF=1:失敗
+RDOPEN:
+	LD	HL,RFNAME
+	LD	(ARG_DE),HL
+	LD	HL,0
+	LD	(ARG_B),HL
+	LD	A,(RMODE)
+	OR	A
+	JR	NZ,RDO1
+;				< : 読み込み専用で開く
+	LD	A,1
+	LD	(HND_A),A
+	CALL	H_OPEN
+	JR	RDBIND
+RDO1:
+	XOR	A
+	LD	(HND_A),A
+	LD	A,(RMODE)
+	CP	2
+	JR	NZ,RDO2
+;				>> : 既存なら末尾に追加、無ければ作成
+	CALL	H_OPEN
+	JR	C,RDO2
+	LD	A,(IY+16)
+	LD	(IY+S_POS),A
+	LD	A,(IY+17)
+	LD	(IY+S_POS+1),A
+	LD	A,(IY+18)
+	LD	(IY+S_POS+2),A
+	LD	A,(IY+19)
+	LD	(IY+S_POS+3),A
+	JR	RDBIND
+RDO2:
+	CALL	H_CREATE
+RDBIND:
+	RET	C
+;				B=割り当てられたハンドル -> HTAB[0 or 1] へ付け替え
+	LD	E,B
+	LD	D,0
+	LD	HL,HTAB
+	ADD	HL,DE
+	LD	A,(HL)
+	LD	(HL),H_FREE
+	LD	C,A			;スロット番号
+	LD	HL,HTAB
+	LD	A,(RMODE)
+	OR	A
+	JR	Z,RDB1
+	INC	HL			;> / >> -> ハンドル1
+RDB1:
+	LD	(HL),C
+	AND	A
+	RET

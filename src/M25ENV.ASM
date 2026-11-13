@@ -1,0 +1,298 @@
+;	LSX-Dodgers MZ-2500  環境変数 (SET / ENV, $NAME 展開)
+;	表は "NAME=VALUE",0 の並びで、最後に余分な 0。名前は英数字と _ (大文字小文字は区別しない=大文字で保存)。
+
+EXBUF	EQU	OUTBUF		;$展開はコマンド行を処理する前(リダイレクト出力バッファは空)にしか使わないので共用
+NMBUF	EQU	RFNAME		;名前の作業 (RFNAME はこの後のリダイレクト解析で使う)
+EXBR:	DB	0
+EVP:	DW	0
+EVL:	DW	0
+
+;	コマンド行 (DTA1+2) の $NAME / ${NAME} を値に置き換える。$$ は $ 1文字。未定義は空。
+;	COMMAND2 の先頭 (リダイレクト解析の前) から呼ぶ。$ が無ければ何もしない。
+HND_EXPAND:
+	LD	HL,DTA1+2
+EX0:
+	LD	A,(HL)
+	CP	'$'
+	JR	Z,EX1
+	CP	0DH
+	RET	Z
+	OR	A
+	RET	Z
+	INC	HL
+	JR	EX0
+EX1:
+	LD	HL,DTA1+2
+	LD	DE,EXBUF
+EXL:
+	LD	A,(HL)
+	CP	0DH
+	JP	Z,EXEND
+	OR	A
+	JP	Z,EXEND
+	CP	'$'
+	JR	Z,EXD
+	CALL	EXPUT
+	INC	HL
+	JR	EXL
+EXD:
+	INC	HL
+	LD	A,(HL)
+	CP	'?'
+	JR	Z,EXQ
+	CP	'$'
+	JR	NZ,EXD1
+	CALL	EXPUT			;$$ -> $
+	INC	HL
+	JR	EXL
+EXQ:
+	INC	HL
+	CALL	EXNUM			;$? = 直前の終了コード
+	JR	EXL
+EXD1:
+	XOR	A
+	LD	(EXBR),A
+	LD	A,(HL)
+	CP	'{'
+	JR	NZ,EXD2
+	LD	A,1
+	LD	(EXBR),A
+	INC	HL
+	LD	A,(HL)
+EXD2:
+	CALL	ISNM
+	JR	NC,EXN
+	LD	A,'$'			;名前でない $ はそのまま
+	CALL	EXPUT
+	JR	EXL
+EXN:
+	PUSH	DE
+	LD	DE,NMBUF
+	LD	B,16
+EXN1:
+	LD	A,(HL)
+	CALL	ISNM
+	JR	C,EXN2
+	INC	HL
+	LD	C,A
+	LD	A,B
+	OR	A
+	JR	Z,EXN1			;長すぎる名前の残りは捨てる
+	LD	A,C
+	LD	(DE),A
+	INC	DE
+	DEC	B
+	JR	EXN1
+EXN2:
+	XOR	A
+	LD	(DE),A
+	LD	A,(EXBR)
+	OR	A
+	JR	Z,EXN3
+	LD	A,(HL)
+	CP	'}'
+	JR	NZ,EXN3
+	INC	HL
+EXN3:
+	POP	DE
+	PUSH	HL
+	LD	HL,NMBUF
+	CALL	ISPATH			;$PATH は内蔵 PATH コマンドの値 (PATHD)
+	JR	NZ,EXN3B
+	LD	HL,PATHD
+EXN3P:
+	LD	A,(HL)
+	CP	020H
+	JR	C,EXN5
+	CALL	EXPUT
+	INC	HL
+	JR	EXN3P
+EXN3B:
+	PUSH	DE
+	CALL	ENVFIND
+	EX	DE,HL			;HL=値 (見つからなければ無意味)
+	POP	DE
+	JR	C,EXN5
+EXN4:
+	LD	A,(HL)
+	OR	A
+	JR	Z,EXN5
+	CALL	EXPUT
+	INC	HL
+	JR	EXN4
+EXN5:
+	POP	HL
+	JP	EXL
+EXEND:
+	LD	(DE),A
+	LD	HL,EXBUF
+	LD	DE,DTA1+2
+EXC:
+	LD	A,(HL)
+	LD	(DE),A
+	INC	HL
+	INC	DE
+	CP	0DH
+	JR	Z,EXC9
+	OR	A
+	JR	NZ,EXC
+EXC9:
+	AND	A
+	RET
+
+;	A を EXBUF へ (満杯なら捨てる)
+EXPUT:
+	PUSH	HL
+	LD	HL,EXBUF+126
+	OR	A
+	SBC	HL,DE
+	POP	HL
+	RET	C
+	RET	Z
+	LD	(DE),A
+	INC	DE
+	RET
+
+;	A が名前の文字か。NC=はい (A は大文字化), C=いいえ
+ISNM:
+	CP	'_'
+	JR	Z,ISOK
+	CP	'0'
+	JR	C,ISNO
+	CP	'9'+1
+	JR	C,ISOK
+	CP	'A'
+	JR	C,ISNO
+	CP	'Z'+1
+	JR	C,ISOK
+	CP	'a'
+	JR	C,ISNO
+	CP	'z'+1
+	JR	NC,ISNO
+	SUB	020H
+ISOK:
+	AND	A
+	RET
+ISNO:
+	SCF
+	RET
+
+;	HL=名前(0終端, 大文字) -> NC: HL=エントリ先頭, DE=値  /  C: HL=終端位置
+ENVFIND:
+	LD	DE,ENVBUF
+EF1:
+	LD	A,(DE)
+	OR	A
+	JR	Z,EFNO
+	PUSH	HL
+	PUSH	DE
+EF2:
+	LD	A,(DE)
+	CP	'='
+	JR	Z,EF3
+	CP	(HL)
+	JR	NZ,EF4
+	INC	HL
+	INC	DE
+	JR	EF2
+EF3:
+	LD	A,(HL)
+	OR	A
+	JR	NZ,EF4
+	INC	DE
+	POP	HL
+	POP	BC
+	AND	A
+	RET
+EF4:
+	POP	DE
+	POP	HL
+EF5:
+	LD	A,(DE)
+	INC	DE
+	OR	A
+	JR	NZ,EF5
+	JR	EF1
+EFNO:
+	EX	DE,HL
+	SCF
+	RET
+
+;	BDOS 6Bh _GENV : HL=名前(0終端, 大文字小文字は不問), DE=値の置き場。
+;	A=0:あった(値を0終端で書く)  A=1:なかった(置き場は空文字)。名前 PATH は内蔵 PATH コマンドの値(CCPの PATHD)。
+H_GENV:
+	PUSH	DE
+	LD	DE,GNBUF
+	LD	B,16
+GV1:
+	LD	A,(HL)
+	CALL	ISNM
+	JR	C,GV2
+	INC	HL
+	LD	(DE),A
+	INC	DE
+	DJNZ	GV1
+GV2:
+	XOR	A
+	LD	(DE),A
+	LD	HL,GNBUF
+	CALL	ISPATH
+	JR	NZ,GV5
+	POP	DE
+	LD	HL,PATHD
+GV4:
+	LD	A,(HL)
+	CP	020H
+	JR	C,GV9
+	LD	(DE),A
+	INC	HL
+	INC	DE
+	JR	GV4
+GV9:
+	XOR	A
+	LD	(DE),A
+	RET
+GV5:
+	LD	HL,GNBUF
+	CALL	ENVFIND
+	POP	BC
+	JR	C,GV8
+	LD	H,B
+	LD	L,C
+	EX	DE,HL
+GV6:
+	LD	A,(HL)
+	LD	(DE),A
+	INC	HL
+	INC	DE
+	OR	A
+	JR	NZ,GV6
+	RET
+GV8:
+	LD	H,B
+	LD	L,C
+	LD	(HL),0
+	LD	A,1
+	RET
+;	HL=名前(0終端・大文字) が "PATH" なら Z。HL,DE は保つ
+ISPATH:
+	PUSH	HL
+	PUSH	DE
+	LD	DE,GPSTR
+IPA1:
+	LD	A,(DE)
+	CP	(HL)
+	JR	NZ,IPA2
+	INC	DE
+	INC	HL
+	OR	A
+	JR	NZ,IPA1
+IPA2:
+	POP	DE
+	POP	HL
+	RET
+GPSTR:
+	DEFM	"PATH"
+	DB	0
+GNBUF:
+	DS	17

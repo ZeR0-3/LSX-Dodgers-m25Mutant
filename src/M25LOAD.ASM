@@ -1,0 +1,102 @@
+;	LSX-Dodgers MZ-2500  COMローダ(ステージ1)
+;	TPAは 0100H-DEFFH(ユーザのバンク5,6=A000H以上は、カーネル実行中は見えない)。
+;	A000H未満へは直接、A000H以上へは STAGE(カーネルのバンク5の空き)に読んでから UCPIN でユーザのページへ写す。
+;	入口: DTA_CCP のFCBがオープン済み。出口(C_EXE が見る): A=1 かつ HL=読んだバイト数 なら成功(EOFまで読めた)。A=0 は入りきらない。
+LDTOT	EQU	LDVARS
+LDDST	EQU	LDVARS+2
+LDN	EQU	LDVARS+4
+LDDMA	EQU	LDVARS+6
+LDA	EQU	LDVARS+8
+LDGOT	EQU	LDVARS+10
+LDSTG	EQU	LDVARS+12
+LOADCOM:
+	CALL	PG_FREEALL
+	LD	HL,0
+	LD	(LDTOT),HL
+LC1:	LD	HL,(LDTOT)
+	LD	DE,00100H
+	ADD	HL,DE
+	LD	(LDDST),HL
+	EX	DE,HL			;DE=書き込み先
+	LD	HL,0DF00H		;ユーザのスタック用に E000H の手前 100H を残す
+	AND	A
+	SBC	HL,DE
+	JP	C,LCFULL
+	LD	A,H
+	OR	L
+	JP	Z,LCFULL		;HL=残り容量
+	XOR	A
+	LD	(LDSTG),A
+	LD	A,D
+	CP	0A0H
+	JR	NC,LC2
+	PUSH	HL			;A000H未満: 直接読む。A000Hを越えない長さまで
+	LD	HL,0A000H
+	AND	A
+	SBC	HL,DE
+	EX	DE,HL			;DE=A000H-書き込み先
+	POP	HL
+	CALL	LCMIN			;HL=min(HL,DE)
+	LD	DE,(LDDST)
+	JR	LC3
+LC2:	LD	DE,00400H		;A000H以上: ステージング(最大1KB)で、8KBページの終端を越えない
+	CALL	LCMIN
+	LD	A,(LDDST)
+	LD	E,A
+	LD	A,(LDDST+1)
+	AND	01FH
+	LD	D,A
+	PUSH	HL
+	LD	HL,02000H
+	AND	A
+	SBC	HL,DE
+	EX	DE,HL			;DE=ページの残り
+	POP	HL
+	CALL	LCMIN
+	LD	A,1
+	LD	(LDSTG),A
+	LD	DE,STAGE
+LC3:	LD	(LDN),HL		;今回の長さ / DE=読み込み先(DMA)
+	LD	(LDDMA),DE
+	CALL	_SYS1A			;(BDOS)DTAの設定
+	LD	HL,(LDTOT)
+	LD	(DTA_CCP+33),HL		;ランダムレコード=バイト位置
+	XOR	A
+	LD	(DTA_CCP+35),A
+	LD	(DTA_CCP+36),A
+	LD	HL,(LDN)
+	LD	DE,DTA_CCP
+	LD	C,027H			;(BDOS)ランダムブロック読み込み
+	CALL	SYSTEM
+	LD	(LDA),A
+	LD	(LDGOT),HL
+	LD	A,H
+	OR	L
+	JR	Z,LCEND			;読めなかった
+	LD	A,(LDSTG)
+	OR	A
+	JR	Z,LC4
+	LD	BC,(LDGOT)
+	LD	HL,STAGE
+	LD	DE,(LDDST)
+	CALL	UCPIN
+LC4:	LD	HL,(LDTOT)
+	LD	DE,(LDGOT)
+	ADD	HL,DE
+	LD	(LDTOT),HL
+	LD	A,(LDA)
+	CP	1
+	JP	NZ,LC1			;EOFまで読めていない: 続き
+LCEND:	LD	HL,(LDTOT)
+	LD	A,1
+	RET
+LCFULL:	LD	HL,(LDTOT)
+	XOR	A
+	RET
+LCMIN:	AND	A			;HL=min(HL,DE)
+	PUSH	HL
+	SBC	HL,DE
+	POP	HL
+	RET	C
+	EX	DE,HL
+	RET

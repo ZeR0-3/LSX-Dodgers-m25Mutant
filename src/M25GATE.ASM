@@ -1,0 +1,926 @@
+;	LSX-Dodgers MZ-2500  ユーザ/カーネルのゲート(バンク7=共通に置く)
+;	ユーザ実行中はバンク5,6(A000-DFFF)がユーザページ(UPG5,UPG6)、カーネル実行中は本体のページ(KPG5,KPG6)。
+;	ユーザの BDOS 呼び出し(CALL 0005H = UENTRY)・BIOS 入口・COM起動・ウォームブートは、ここを通ってマップを切り替える。
+;	スタックは ユーザSP -> 共通の GSTK -> (マップ切替) -> カーネルの KSTK の順に替える。切替中は割り込み禁止。
+;	9F00H以上を指すポインタ(FCB/DMA/文字列)は BOUNCE 系へコピーして渡し、戻りでコピーアウトする。
+;	このファイルは M25EDT の EDT_TAB の直前(アドレスが 0E000H の手前になる位置)に取り込む。
+
+BODYEND:				;ここから E000H までが詰め物(build.py が空きとして表示する)
+	DEFS	0E000H-ORG_BASE-$
+UENTRY:	JP	UGATE			;0005H のJPの飛び先(=0006H)がTPAの上端 E000H になる
+
+;	---- BDOS ----
+UGATE:
+	LD	(UAFV),A
+	LD	A,I
+	DI
+	LD	A,0
+	JP	PO,UG0
+	INC	A
+UG0:	LD	(UIFF),A
+	LD	(USP),SP
+	LD	SP,GSTK
+	LD	(UBC),BC
+	LD	(UDE),DE
+	LD	(UHL),HL
+	LD	A,C
+	LD	(UFN),A
+	XOR	A
+	LD	(UACT),A
+	LD	A,C
+	CP	9
+	JP	Z,UG_STR9
+	CP	048H
+	JP	Z,UG_RD
+	CP	049H
+	JP	Z,UG_WR
+	CALL	GPRE
+	CALL	KCALL
+	CALL	GPOST
+UGRET:					;結果(URAF,URBC,URDE,URHL)をユーザへ返す
+	LD	BC,(URBC)
+	LD	DE,(URDE)
+	LD	HL,(URAF)
+	LD	SP,(USP)
+	PUSH	HL
+	LD	HL,(URHL)
+	LD	A,(UIFF)
+	OR	A
+	JR	NZ,UGREI
+	POP	AF
+	RET
+UGREI:	POP	AF
+	EI
+	RET
+
+;	カーネルのBDOSを1回呼ぶ。入口: ユーザマップ・SP=GSTK。引数は UAFV,UBC,UDE,UHL。出口: URAF/URBC/URDE/URHL とユーザマップ
+KCALL:
+	LD	A,5
+	OUT	(0B4H),A
+	LD	A,KPG5
+	OUT	(0B5H),A
+	LD	A,6
+	OUT	(0B4H),A
+	LD	A,KPG6
+	OUT	(0B5H),A
+	LD	A,1
+	LD	(INKRN),A
+	LD	SP,KSTK
+	LD	A,(UAFV)
+	LD	BC,(UBC)
+	LD	DE,(UDE)
+	LD	HL,(UHL)
+	CALL	BDOS
+	DI
+	LD	(URHL),HL
+	LD	(URDE),DE
+	LD	(URBC),BC
+	PUSH	AF
+	POP	HL
+	LD	(URAF),HL
+	LD	SP,GSTK-2
+	XOR	A
+	LD	(INKRN),A
+	LD	A,5
+	OUT	(0B4H),A
+	LD	A,UPG5
+	OUT	(0B5H),A
+	LD	A,6
+	OUT	(0B4H),A
+	LD	A,UPG6
+	OUT	(0B5H),A
+	RET
+
+;	---- 前処理/後処理 ----
+;	クラス(GCLS): bit0=DEがFCB  bit1=DMAを使う  bit2=解析(DE=文字列,HL=FCB)  bit5=行バッファ(0Ah)
+;	UACT(実際にバウンスしたもの): bit0=FCB bit1=DMA bit2=解析 bit3=文字列(戻し不要) bit4=GENV出力 bit5=行
+GCLS:	DB	00,00,00,00,00,00,00,00,00,00,020H,00,00,00,00,01H		;00-0F
+	DB	01,03,03,01,03,03,01,01,00,00,00,00,00,00,00,00			;10-1F
+	DB	00,03,03,01,01,00,03,03,03,04,00,00,00,00,00,00			;20-2F (26-28=ブロック)
+	DB	00								;30
+
+GPRE:
+	LD	A,(UFN)
+	CP	01AH
+	JP	Z,GP_1A
+	CP	00DH
+	JP	Z,GP_0D
+	CP	031H
+	JP	NC,GP_HI
+	LD	HL,GCLS
+	ADD	A,L
+	LD	L,A
+	JR	NC,GP1
+	INC	H
+GP1:	LD	B,(HL)			;B=クラス
+	LD	A,B
+	AND	020H
+	JR	Z,GP2
+	LD	HL,(UDE)		;0Ah 行バッファ
+	LD	A,H
+	CP	09FH
+	RET	C
+	LD	A,(HL)
+	ADD	A,2
+	LD	C,A
+	LD	B,0
+	LD	DE,BOUNCEX
+	LDIR
+	LD	HL,(UDE)
+	LD	(UODE),HL
+	LD	HL,BOUNCEX
+	LD	(UDE),HL
+	LD	A,020H
+	LD	(UACT),A
+	RET
+GP2:	LD	A,B
+	AND	004H
+	JR	NZ,GP4			;解析
+	LD	A,B
+	AND	001H
+	JR	Z,GP3
+	LD	HL,(UDE)
+	LD	A,H
+	CP	09FH
+	JR	C,GP3
+	LD	DE,BOUNCEF
+	PUSH	BC
+	LD	BC,37
+	LDIR
+	POP	BC
+	LD	HL,(UDE)
+	LD	(UODE),HL
+	LD	HL,BOUNCEF
+	LD	(UDE),HL
+	LD	A,(UACT)
+	OR	001H
+	LD	(UACT),A
+GP3:	LD	A,B
+	AND	002H
+	RET	Z
+	LD	HL,(UDMA)
+	LD	A,H
+	CP	09FH
+	RET	C			;DMAは見える
+	LD	A,(UFN)
+	CP	026H
+	JR	C,GP3A
+	CP	028H
+	JP	C,GP_BLK		;26h,27h: DMAが隠れるブロック転送は GP_BLK で128Bずつ
+GP3A:	LD	DE,BOUNCE
+	LD	BC,128
+	LDIR
+	LD	A,(UACT)
+	OR	002H
+	LD	(UACT),A
+	RET
+GP4:	LD	HL,(UDE)		;解析: DE=文字列 HL=FCB
+	LD	A,H
+	CP	09FH
+	JR	C,GP4A
+	LD	DE,BOUNCES
+	LD	BC,128
+	LDIR
+	LD	HL,(UDE)
+	LD	(UODE),HL
+	LD	HL,BOUNCES
+	LD	(UDE),HL
+	LD	A,(UACT)
+	OR	008H
+	LD	(UACT),A
+GP4A:	LD	HL,(UHL)
+	LD	A,H
+	CP	09FH
+	RET	C
+	LD	(UOHL),HL
+	LD	HL,BOUNCEG
+	LD	(UHL),HL
+	LD	A,(UACT)
+	OR	004H
+	LD	(UACT),A
+	RET
+
+GP_1A:					;DMAの設定: ユーザ値を覚え、隠れる場所ならカーネルにはBOUNCEを渡す
+	LD	HL,(UDE)
+	LD	(UDMA),HL
+	LD	A,H
+	CP	09FH
+	RET	C
+	LD	HL,BOUNCE
+	LD	(UDE),HL
+	RET
+GP_0D:
+	LD	HL,00080H
+	LD	(UDMA),HL
+	RET
+GP_HI:					;40h以上: 文字列を取る 43h,44h,5Ah / 解析 5Ch / 6Bh だけ処理
+	LD	A,(UFN)
+	CP	05CH
+	JP	Z,GP4
+	CP	043H
+	JR	Z,GP_S
+	CP	044H
+	JR	Z,GP_S
+	CP	05AH
+	JR	Z,GP_S
+	CP	06BH
+	RET	NZ
+	LD	HL,(UDE)		;6Bh GENV: DE=名前 HL=出力 B=大きさ
+	LD	A,H
+	CP	09FH
+	JR	C,GP_6B2
+	LD	DE,BOUNCES
+	LD	BC,128
+	LDIR
+	LD	HL,(UDE)
+	LD	(UODE),HL
+	LD	HL,BOUNCES
+	LD	(UDE),HL
+	LD	A,(UACT)
+	OR	008H
+	LD	(UACT),A
+GP_6B2:	LD	HL,(UHL)
+	LD	A,H
+	CP	09FH
+	RET	C
+	LD	(UOHL),HL
+	LD	HL,BOUNCEX
+	LD	(UHL),HL
+	LD	A,(UACT)
+	OR	010H
+	LD	(UACT),A
+	RET
+GP_S:	LD	HL,(UDE)
+	LD	A,H
+	CP	09FH
+	RET	C
+	LD	DE,BOUNCES
+	LD	BC,128
+	LDIR
+	LD	HL,(UDE)
+	LD	(UODE),HL
+	LD	HL,BOUNCES
+	LD	(UDE),HL
+	LD	A,008H
+	LD	(UACT),A
+	RET
+GP_BLK:					;26h/27h: DMAが隠れている → 128Bずつ BOUNCE(カーネルのDMA)を介して繰り返す(1レコード=1バイト。ランダムレコードはカーネルが進める)
+	POP	HL			;GPRE の呼び出し元(UGATE)へ戻る分を捨てる
+	LD	HL,(UDE)		;カーネルから見えるFCB(BOUNCEF か元のまま)
+	LD	(UDE0),HL
+	LD	HL,(UDMA)
+	LD	(UCUR),HL
+	LD	HL,(UHL)
+	LD	(ULEN),HL
+	LD	HL,0
+	LD	(UTOT),HL
+	XOR	A
+	LD	(UMORE),A
+GB_L:	LD	HL,(ULEN)
+	LD	A,H
+	OR	L
+	JP	Z,GB_END
+	LD	DE,128
+	AND	A
+	SBC	HL,DE
+	LD	HL,(ULEN)
+	JR	C,GB_C1
+	LD	HL,128
+GB_C1:	LD	(UCHK),HL
+	LD	A,(UFN)
+	CP	026H
+	JR	NZ,GB_R
+	LD	HL,(UCUR)		;書き込み: ユーザ→BOUNCE
+	LD	DE,BOUNCE
+	LD	BC,(UCHK)
+	LDIR
+GB_R:	LD	HL,(UDE0)
+	LD	(UDE),HL
+	LD	HL,(UCHK)
+	LD	(UHL),HL
+	LD	A,(UFN)
+	LD	(UBC),A
+	CALL	KCALL
+	LD	HL,(URAF)
+	LD	A,H			;結果コード
+	LD	(UMORE),A
+	LD	HL,(UCHK)		;書き込み: 今回の数(失敗なら0)
+	LD	A,(UFN)
+	CP	026H
+	JR	Z,GB_W
+	LD	HL,(URHL)		;読み込み: 実際の数(A=FFhなら0)
+	LD	A,(UMORE)
+	INC	A
+	JR	NZ,GB_D
+	LD	H,A
+	LD	L,A
+	JR	GB_D
+GB_W:	LD	A,(UMORE)
+	OR	A
+	JR	Z,GB_D
+	LD	HL,0
+GB_D:	LD	(UDONE),HL
+	LD	B,H
+	LD	C,L
+	LD	A,(UFN)
+	CP	027H
+	JR	NZ,GB_A
+	LD	A,B
+	OR	C
+	JR	Z,GB_A
+	LD	HL,BOUNCE		;読み込み: BOUNCE→ユーザ
+	LD	DE,(UCUR)
+	LDIR
+GB_A:	LD	BC,(UDONE)
+	LD	HL,(UCUR)
+	ADD	HL,BC
+	LD	(UCUR),HL
+	LD	HL,(ULEN)
+	AND	A
+	SBC	HL,BC
+	LD	(ULEN),HL
+	LD	HL,(UTOT)
+	ADD	HL,BC
+	LD	(UTOT),HL
+	LD	HL,(UCHK)
+	AND	A
+	SBC	HL,BC
+	JR	NZ,GB_END		;短い(EOF/失敗) → ここまで
+	LD	A,(UMORE)
+	OR	A
+	JP	Z,GB_L
+GB_END:	LD	HL,(UTOT)
+	LD	(URHL),HL
+	LD	HL,0
+	LD	(URDE),HL
+	LD	(URBC),HL
+	LD	A,(UMORE)
+	LD	H,A
+	LD	(URAF),HL
+	CALL	GPOST			;FCB を書き戻す
+	JP	UGRET
+
+GPOST:
+	LD	A,(UACT)
+	BIT	0,A
+	JR	Z,GO1
+	LD	HL,BOUNCEF		;FCBを書き戻す
+	LD	DE,(UODE)
+	LD	BC,37
+	LDIR
+	LD	A,(UACT)
+GO1:	BIT	1,A
+	JR	Z,GO2
+	LD	HL,BOUNCE		;DMAを書き戻す(読み込み系・検索系)
+	LD	DE,(UDMA)
+	LD	BC,128
+	LDIR
+	LD	A,(UACT)
+GO2:	BIT	2,A
+	JR	Z,GO3
+	LD	HL,BOUNCEG		;解析したFCB
+	LD	DE,(UOHL)
+	LD	BC,36
+	LDIR
+	LD	HL,(UOHL)
+	LD	(URHL),HL
+	LD	A,(UACT)
+GO3:	BIT	3,A
+	JR	Z,GO4
+	LD	A,(UFN)
+	CP	029H
+	JR	Z,GO3A
+	CP	05CH
+	JR	NZ,GO3B
+GO3A:	LD	HL,(URDE)		;解析後のDE(文字列の続き)をユーザのアドレスへ
+	LD	BC,BOUNCES
+	AND	A
+	SBC	HL,BC
+	LD	BC,(UODE)
+	ADD	HL,BC
+	LD	(URDE),HL
+GO3B:	LD	A,(UACT)
+GO4:	BIT	4,A
+	JR	Z,GO5
+	LD	HL,BOUNCEX		;GENVの出力(Bバイト)
+	LD	DE,(UOHL)
+	LD	A,(UBC+1)
+	LD	C,A
+	LD	B,0
+	OR	A
+	JR	Z,GO5
+	LDIR
+	LD	A,(UACT)
+GO5:	BIT	5,A
+	RET	Z
+	LD	A,(BOUNCEX+1)		;行バッファを書き戻す(2+長さ)
+	ADD	A,2
+	LD	C,A
+	LD	B,0
+	LD	HL,BOUNCEX
+	LD	DE,(UODE)
+	LDIR
+	RET
+
+;	---- 09h: $終端の文字列。127Bずつ BOUNCES に取って呼ぶ ----
+UG_STR9:
+	LD	HL,(UDE)
+	LD	A,H
+	CP	09FH
+	JR	C,UG9D			;見える所はそのまま渡す
+UG9L:	LD	DE,BOUNCES
+	LD	B,127
+UG9C:	LD	A,(HL)
+	LD	(DE),A
+	INC	HL
+	INC	DE
+	CP	'$'
+	JR	Z,UG9G
+	DJNZ	UG9C
+	LD	A,'$'
+	LD	(DE),A
+	LD	A,1
+	JR	UG9H
+UG9G:	XOR	A
+UG9H:	LD	(UMORE),A
+	LD	(UCUR),HL
+	LD	HL,BOUNCES
+	LD	(UDE),HL
+	CALL	KCALL
+	LD	A,(UMORE)
+	OR	A
+	JR	Z,UG9E
+	LD	HL,(UCUR)
+	JR	UG9L
+UG9D:	CALL	KCALL
+UG9E:	JP	UGRET
+
+;	---- 48h(読み)/49h(書き): DE=バッファ HL=長さ B=ハンドル。隠れる場所なら256Bずつ ----
+UG_RD:	LD	A,1
+	JR	UG_RW
+UG_WR:	LD	A,2
+UG_RW:	LD	(UMORE),A
+	LD	HL,(UDE)
+	LD	A,H
+	CP	09FH
+	JR	NC,UGRWB
+	CALL	KCALL			;見える所はそのまま
+	JP	UGRET
+UGRWB:	LD	(UCUR),HL
+	LD	(UDE0),HL
+	LD	HL,(UHL)
+	LD	(ULEN),HL
+	LD	HL,0
+	LD	(UTOT),HL
+	LD	(URAF),HL
+	LD	HL,(UBC)
+	LD	(URBC),HL
+UGRWL:	LD	HL,(ULEN)
+	LD	A,H
+	OR	L
+	JR	Z,UGRWD
+	LD	DE,256
+	AND	A
+	SBC	HL,DE
+	LD	HL,(ULEN)
+	JR	C,UGRWC
+	LD	HL,256
+UGRWC:	LD	(UCHK),HL
+	LD	A,(UMORE)
+	CP	2
+	JR	NZ,UGRWR
+	LD	HL,(UCUR)		;書き込み: ユーザ→BOUNCEX
+	LD	DE,BOUNCEX
+	LD	BC,(UCHK)
+	LDIR
+UGRWR:	LD	HL,BOUNCEX
+	LD	(UDE),HL
+	LD	HL,(UCHK)
+	LD	(UHL),HL
+	CALL	KCALL
+	LD	HL,(URAF)
+	LD	A,H
+	OR	A
+	JR	NZ,UGRWD		;エラー
+	LD	BC,(URHL)		;今回の実際の長さ
+	LD	(UDONE),BC
+	LD	A,(UMORE)
+	CP	1
+	JR	NZ,UGRWA
+	LD	A,B
+	OR	C
+	JR	Z,UGRWA
+	LD	HL,BOUNCEX		;読み込み: BOUNCEX→ユーザ
+	LD	DE,(UCUR)
+	LDIR
+UGRWA:	LD	BC,(UDONE)
+	LD	HL,(UCUR)
+	ADD	HL,BC
+	LD	(UCUR),HL
+	LD	HL,(ULEN)
+	AND	A
+	SBC	HL,BC
+	LD	(ULEN),HL
+	LD	HL,(UTOT)
+	ADD	HL,BC
+	LD	(UTOT),HL
+	LD	HL,(UCHK)
+	AND	A
+	SBC	HL,BC
+	JR	Z,UGRWL			;全部できた→次の塊
+UGRWD:	LD	HL,(UTOT)		;短い(EOF/満杯)かエラー→ここまで
+	LD	(URHL),HL
+	LD	HL,(UDE0)
+	LD	(URDE),HL
+	JP	UGRET
+
+;	---- BIOS入口(F003-)と拡張BIOS表(F0CAH-)のスタブ ----
+;	各入口は `CALL UXG` + DW 本当の飛び先。UXG は INKRN(=カーネルのマップで実行中か)を見て、
+;	カーネル側からなら飛び先へそのまま、ユーザ側ならマップを切り替えて呼び、戻ってユーザマップに戻す。
+;	レジスタ(AF,BC,DE,HL,IX,IY)は入りも出もそのまま通す(割り込み禁止の間はマップ切替中のみ)。
+UB_CONST:
+	CALL	UXG
+	DW	CONSTX
+UB_CONIN:
+	CALL	UXG
+	DW	HND_FLGET
+_SYS07:					;(BDOS)コンソール直接入力(カーネル側の入口)
+	JP	HND_FLGET
+UB_CONOUT:
+	CALL	UXG
+	DW	CONOUT1
+UX_INKEY:
+	CALL	UXG
+	DW	INKEY
+UX_PRINT:
+	CALL	UXG
+	DW	HND_PRINT
+UX_SCRN:
+	CALL	UXG
+	DW	SCRN
+UX_POS:
+	CALL	UXG
+	DW	POS
+UX_LOC:
+	CALL	UXG
+	DW	LOC
+UX_CHGDRV:
+	CALL	UXG
+	DW	CHGDRV
+UX_GETDPB:
+	CALL	UXG
+	DW	GETDPB
+UX_FFLUSH:
+	CALL	UXG
+	DW	FFLUSH
+UX_RDFATX:
+	CALL	UXG
+	DW	RDFATX
+UX_RDFAT:
+	CALL	UXG
+	DW	RDFAT
+UX_WTTRK:
+	CALL	UXG
+	DW	WTTRK
+UX_FDRD:
+	CALL	UXG
+	DW	FDRD
+UX_FDWT:
+	CALL	UXG
+	DW	FDWT
+UX_BPB2DPB:
+	CALL	UXG
+	DW	BPB2DPB
+UX_BREAK:
+	CALL	UXG
+	DW	END_BATCH
+UX_COMANL:
+	CALL	UXG
+	DW	COMANL
+
+UMSGA:					;MSG_A をどちらのマップからでも呼べるように(TRAP38 から)
+	CALL	UXG
+	DW	MSG_A
+;	---- ユーザの RST 18H (IOCS呼び出し。0018H = JP UIOCS) ----
+;	IOCSのRAM(0000H-25FFH)は起動時にページ0Ch,0Dhへ退避済み(M25INIT)。呼び出し中だけそれをバンク0,1に出し、
+;	ユーザの0000H-3FFFHは見えなくなる(戻れば元通り)。→ IOCSに渡すポインタ(バッファ等)は 4000H 以上に置くこと。
+;	`RST 18H` の直後の DB 関数番号 はここで読み、共通バンクのスタブ(UIOSTUB)に書き換えて実行する(ユーザのコードが隠れるため)。
+;	スタックはIOCS RAM内の 1900H(IMONと同じ。バンク7やバンク6に置くとIOCSのVRAMアクセスで壊れる)。IM2/I=02h/C6h=07h でIOCSの環境にし、戻りでIM1/C6h=08hに戻す。
+;	レジスタ A,BC,DE,HL,IX,IY は入りも出もそのまま(フラグも)。IOCSが無い(IOCSOK=0)ときはメッセージを出してウォームブート。
+UIOCS:
+	LD	(UIA),A
+	LD	(UIHL),HL
+	POP	HL			;戻り番地(DB 関数番号 を指す)
+	LD	A,(HL)
+	INC	HL
+	PUSH	HL			;関数番号の次の番地を戻り先にしておく
+	LD	(UIOFN),A
+	LD	(UIDE),DE
+	CP	IOCTN
+	JR	C,UI_IN
+	LD	A,(IOCSOK)		;表の外: IOCSがあれば素通し
+	OR	A
+	JR	NZ,UI_PT
+	JP	UI_NO
+UI_IN:	LD	L,A
+	LD	H,0
+	ADD	HL,HL
+	LD	DE,IOCT
+	ADD	HL,DE
+	LD	E,(HL)
+	INC	HL
+	LD	D,(HL)			;DE=表の内容
+	LD	A,D
+	OR	A
+	JR	NZ,UI_NAT
+	LD	A,E
+	DEC	A
+	JR	Z,UI_PT			;0001 = ROMのIOCSへ素通し
+	JP	UI_NO			;0000 = 未実装(その他の小さい値も未実装扱い)
+UI_NAT:	PUSH	DE			;自前ハンドラ: A,DE,HL を戻して RET で飛ぶ(スタックの先頭はユーザへの戻り先。ハンドラは RET で戻る。フラグは不定)
+	LD	DE,(UIDE)
+	LD	HL,(UIHL)
+	LD	A,(UIA)
+	RET
+UI_PT:	POP	HL			;ROMのIOCSへ素通し
+	LD	(UIRET),HL
+	LD	DE,(UIDE)
+	LD	HL,(UIHL)
+	LD	(UISP),SP
+	LD	A,I
+	DI
+	LD	A,0
+	JP	PO,UI0
+	INC	A
+UI0:	LD	(UIIFF),A
+	XOR	A
+	OUT	(0B4H),A
+	LD	A,00CH
+	OUT	(0B5H),A
+	LD	A,00DH
+	OUT	(0B5H),A		;バンク0,1 = IOCSのRAM
+#IF EXISTS USE_TINIT
+#ELSE
+#IF EXISTS COLS80
+	IN	A,(0E8H)		;IOCS内部は40桁のつもり(IMONと同じ)
+	AND	0DFH
+	OUT	(0E8H),A
+	LD	A,7
+	OUT	(0F4H),A
+	LD	A,008H
+	OUT	(0F5H),A
+	LD	A,8
+	OUT	(0F4H),A
+	LD	A,058H
+	OUT	(0F5H),A
+#ENDIF
+#ENDIF
+	LD	A,2
+	LD	I,A
+	IM	2
+	LD	A,007H
+	OUT	(0C6H),A
+	LD	SP,01900H
+	LD	A,(UIA)
+	EI
+UIOSTUB:
+	RST	18H
+UIOFN:	DB	0
+	JP	UIBACK
+
+UIBACK:
+	DI
+	LD	(UIRBC),BC
+	LD	(UIRDE),DE
+	LD	(UIRHL),HL
+	PUSH	AF
+	POP	HL
+	LD	(UIRAF),HL
+	XOR	A
+	OUT	(0B4H),A
+	OUT	(0B5H),A		;バンク0 = 00
+	INC	A
+	OUT	(0B5H),A		;バンク1 = 01
+	LD	A,2
+	OUT	(0B4H),A
+	LD	A,2
+	OUT	(0B5H),A
+	LD	A,3
+	OUT	(0B5H),A
+	LD	A,UPG4
+	OUT	(0B5H),A
+	LD	A,UPG5
+	OUT	(0B5H),A
+	LD	A,UPG6
+	OUT	(0B5H),A		;バンク2-6 = ユーザのマップ(バンク7は共通で動かさない)
+	IM	1
+	LD	A,008H
+	OUT	(0C6H),A
+#IF EXISTS USE_TINIT
+#ELSE
+#IF EXISTS COLS80
+	IN	A,(0E8H)
+	OR	020H
+	OUT	(0E8H),A
+	LD	A,7
+	OUT	(0F4H),A
+	LD	A,009H
+	OUT	(0F5H),A
+	LD	A,8
+	OUT	(0F4H),A
+	LD	A,059H
+	OUT	(0F5H),A
+#ENDIF
+#ENDIF
+	LD	BC,(UIRBC)
+	LD	DE,(UIRDE)
+	LD	SP,(UISP)
+	LD	HL,(UIRET)
+	PUSH	HL
+	LD	HL,(UIRAF)
+	PUSH	HL
+	LD	HL,(UIRHL)
+	LD	A,(UIIFF)
+	OR	A
+	JR	NZ,UIEI
+	POP	AF
+	RET
+UIEI:	POP	AF
+	EI
+	RET
+
+UI_CRT:	JP	UMSGA			;自前のCRT1C(ROM無しのとき表に入る): Aの文字を出す
+
+UI_NO:					;未実装/IOCSが無い: メッセージを出してウォームブート
+	LD	HL,UI_MSG
+UI_N1:	LD	A,(HL)
+	OR	A
+	JP	Z,0
+	INC	HL
+	PUSH	HL
+	CALL	UMSGA
+	POP	HL
+	JR	UI_N1
+UI_MSG:	DEFB	13,10
+	DEFM	"No IOCS (IPL ROM)"
+	DEFB	13,10,0
+
+IMON_G:					;IMON: IOCSがあるときだけ IO_MON へ
+	LD	A,(IOCSOK)
+	OR	A
+	JP	NZ,IO_MON
+	LD	HL,UI_MSG
+	JP	MSX
+
+UXG:					;入口: [SP]=&DW(飛び先の格納場所) その下がユーザへの戻り先
+	EX	(SP),HL			;HL=&DW  [SP]=呼び出し時のHL
+	PUSH	AF
+	LD	A,(INKRN)
+	OR	A
+	JR	NZ,UXK
+	LD	A,(HL)			;ユーザから: 飛び先を取る
+	INC	HL
+	LD	H,(HL)
+	LD	L,A
+	LD	(UTGT),HL
+	POP	AF
+	POP	HL			;ユーザのHLを戻す(SPはユーザの戻り先を指す)
+	PUSH	AF
+	LD	A,I
+	DI
+	LD	A,0
+	JP	PO,UX0
+	INC	A
+UX0:	LD	(UIFF),A
+	POP	AF
+	LD	(UHL),HL
+	LD	(USP),SP
+	LD	SP,GSTK
+	PUSH	AF
+	LD	A,5
+	OUT	(0B4H),A
+	LD	A,KPG5
+	OUT	(0B5H),A
+	LD	A,6
+	OUT	(0B4H),A
+	LD	A,KPG6
+	OUT	(0B5H),A
+	LD	A,1
+	LD	(INKRN),A
+	POP	AF
+	LD	HL,UXBACK		;カーネルのスタックに「飛び先」「戻り先UXBACK」を積んでRETで入る
+	LD	(KSTK-2),HL
+	LD	HL,(UTGT)
+	LD	(KSTK-4),HL
+	LD	HL,(UHL)
+	LD	SP,KSTK-4
+	RET
+UXK:					;カーネルから: そのまま飛び先へ(AF,HLを保つ)
+	LD	A,(HL)
+	INC	HL
+	LD	H,(HL)
+	LD	L,A
+	EX	(SP),HL			;HL=退避したAF  [SP]=飛び先
+	PUSH	HL
+	POP	AF
+	POP	HL			;HL=飛び先
+	EX	(SP),HL			;HL=元のHL  [SP]=飛び先
+	RET
+UXBACK:					;カーネルの飛び先から戻った所
+	DI
+	LD	(URHL),HL
+	PUSH	AF
+	POP	HL
+	LD	(URAF),HL
+	LD	SP,GSTK
+	XOR	A
+	LD	(INKRN),A
+	LD	A,5
+	OUT	(0B4H),A
+	LD	A,UPG5
+	OUT	(0B5H),A
+	LD	A,6
+	OUT	(0B4H),A
+	LD	A,UPG6
+	OUT	(0B5H),A
+	LD	SP,(USP)
+	LD	HL,(URAF)
+	PUSH	HL
+	LD	HL,(URHL)
+	LD	A,(UIFF)
+	OR	A
+	JR	NZ,UBEI
+	POP	AF
+	RET
+UBEI:	POP	AF
+	EI
+	RET
+
+;	ウォームブート(0000H -> F003H -> ここ): カーネルのマップとスタックにしてCCPへ。カーネル側から来ても同じ
+UWBOOT:
+	DI
+	LD	A,5
+	OUT	(0B4H),A
+	LD	A,KPG5
+	OUT	(0B5H),A
+	LD	A,6
+	OUT	(0B4H),A
+	LD	A,KPG6
+	OUT	(0B5H),A
+	LD	A,1
+	LD	(INKRN),A
+	LD	SP,KSTK
+	LD	HL,00080H
+	LD	(UDMA),HL
+	JP	WBOOT1
+
+;	COM起動: C_EXE の最後(JP SETFCB)の RET でここへ来る。ユーザマップ・ユーザSP(E000H)にして 0100H へ
+ULAUNCH:
+	DI
+	LD	A,5
+	OUT	(0B4H),A
+	LD	A,UPG5
+	OUT	(0B5H),A
+	LD	A,6
+	OUT	(0B4H),A
+	LD	A,UPG6
+	OUT	(0B5H),A
+	XOR	A
+	LD	(INKRN),A
+	LD	SP,TPATOP
+	LD	HL,0
+	PUSH	HL			;プログラムの RET 先 = 0000H(ウォームブート)
+	LD	HL,00080H
+	LD	(UDMA),HL
+	EI
+	JP	00100H
+
+;	カーネル -> ユーザメモリ(A000H以上)へコピー: HL=元(カーネルから見える) DE=先(ユーザのアドレス) BC=長さ(DEが属する8KBページを越えないこと)
+;	バンク4の窓にユーザのページを出して LDIR する。スタックはバンク5(カーネル)のまま変えない
+UCPIN:
+	LD	A,D
+	CP	0A0H
+	JR	C,UCP9			;A000H未満はそのまま見える
+	CP	0C0H
+	LD	A,UPG5
+	JR	C,UCP1
+	LD	A,UPG6
+UCP1:	PUSH	AF
+	LD	A,4
+	OUT	(0B4H),A
+	POP	AF
+	OUT	(0B5H),A
+	LD	A,D
+	AND	01FH
+	OR	080H
+	LD	D,A
+	LDIR
+	LD	A,4
+	OUT	(0B4H),A
+	LD	A,UPG4
+	OUT	(0B5H),A
+	RET
+UCP9:	LDIR
+	RET
+
+UGATEE:

@@ -1,0 +1,1257 @@
+; LSX-Dodgers MZ-2500  行編集の拡張(オーバーレイ): TAB補完 / 履歴(↑ ↓ ^P ^N) / 部分一致検索(^F)
+;	常駐側 M25EDT.ASM のスタブから OVLCALL で呼ばれる(入口: EDO_KEY=7, EDT_ADD=8)。CCPのプロンプト行入力の間だけ。
+;	LSX の行入力は「画面の行を読み取る」方式なので、ここでも画面の入力行(開始位置 EDT_START から行末まで)を
+;	読み書きする。入力行が1行(開始行)に収まる場合だけ扱う。
+;	履歴と作業バッファはこのオーバーレイのページの中(DS)。ページは起動時に読み込まれたまま残るので履歴も残る。
+
+EDT_N	EQU	50			;履歴の数
+EDT_L	EQU	80			;1件の大きさ(79文字+0)。EDT_SLOT が x80 の計算を持っている
+
+EDT_HBUF:	DS	EDT_N*EDT_L	;履歴
+EDT_CUR:	DS	84		;画面から読んだ入力行
+EDT_SAVE:	DS	84		;履歴を辿る前の入力中の行
+EDT_PFX:	DS	84		;履歴検索のキー
+EDT_NEW:	DS	100		;補完後の行
+EDT_PAT:	DS	24		;検索パターン
+EDT_COM:	DS	16		;候補の共通部分
+EDT_CAND:	DS	16		;候補
+
+EDT_SRC:	DW	0		;EDT_PUT の入力
+EDT_HON:	DB	0		;1=履歴ファイルを使う
+EDT_HPATH:	DS	48		;履歴ファイルのパス(0終端)
+EDT_HLN:	DB	0		;ファイルから読む行の長さ
+EDT_HSK:	DB	0		;1=最初の不完全な行を読み飛ばし中
+HF_POS:		DS	4		;読む位置
+HF_END:		DS	4		;ファイルの大きさ
+HF_N:		DW	0
+EDT_CNT:	DB	0		;履歴の件数
+EDT_HEAD:	DB	0		;次に書くスロット
+EDT_SUB:	DB	0		;0=前方一致 1=部分一致
+EDT_OLDL:	DB	0
+EDT_NEWL:	DB	0
+EDT_TLEN:	DB	0		;補完: 入力行の長さ
+EDT_WST:	DB	0		;補完: 単語の開始位置
+EDT_CLEN:	DB	0		;補完: 単語の長さ
+EDT_FIRST:	DB	0		;補完: 1語目
+EDT_NC:		DB	0		;候補の数
+EDT_LIST:	DB	0		;1=候補を表示
+EDT_DIRF:	DB	0		;今の候補がディレクトリ
+EDT_MDIR:	DB	0		;最初の候補がディレクトリ
+EDT_LOW:	DB	0		;1=小文字で補完
+
+;	入口7: C=キー。ED_KEY のスタブから。処理したら CF=1、そうでなければ CF=0 (BC は保つ)
+EDO_KEY:
+	PUSH	BC
+	CALL	EDO_KEY1
+	POP	BC
+	RET
+EDO_KEY1:
+	LD	A,C
+	CP	9
+	JR	Z,EDT_KT
+	CP	010H
+	JR	Z,EDT_KP
+	CP	00EH
+	JR	Z,EDT_KN
+	CP	006H
+	JR	Z,EDT_KF
+	CP	01EH
+	JR	Z,EDT_KU
+	CP	01FH
+	JR	Z,EDT_KD
+EDT_K0:
+	XOR	A			;CF=0
+	RET
+
+EDT_KT:
+	CALL	EDT_TAB
+	JR	EDT_KH
+EDT_KP:
+	XOR	A
+	LD	(EDT_SUB),A
+	CALL	EDT_PREV
+	JR	EDT_KH
+EDT_KF:
+	LD	A,1
+	LD	(EDT_SUB),A
+	CALL	EDT_PREV
+	JR	EDT_KH
+EDT_KN:
+	CALL	EDT_NEXT
+	JR	EDT_KH
+EDT_KU:
+	CALL	EDT_ROW
+	JR	NZ,EDT_K0
+	XOR	A
+	LD	(EDT_SUB),A
+	CALL	EDT_PREV
+	JR	EDT_KH
+EDT_KD:
+	CALL	EDT_ROW
+	JR	NZ,EDT_K0
+	CALL	EDT_NEXT
+EDT_KH:
+	SCF
+	RET
+
+
+EDT_ROW:
+	CALL	_POS
+	LD	DE,(EDT_START)
+	LD	A,H
+	CP	D
+	RET
+
+EDT_BEEP:
+	JP	CTRL07
+
+;	画面の入力行(開始位置から行末、末尾の空白は除く)を EDT_CUR へ。A=長さ
+EDT_RD:
+	PUSH	DE
+	LD	HL,(EDT_START)
+	CALL	LOC1			;HL=セル番号
+	LD	A,H
+	ADD	A,0E0H
+	LD	B,A
+	LD	C,L
+	LD	A,(EDT_START)		;開始桁
+	LD	D,A
+	LD	A,(WIDTHV)
+	SUB	D
+	LD	D,A			;D=セル数
+	LD	E,A
+	LD	HL,EDT_CUR
+EDT_RD1:
+	CALL	_SCRN
+	LD	(HL),A
+	INC	HL
+	INC	BC
+	DEC	E
+	JR	NZ,EDT_RD1
+EDT_RD2:
+	LD	A,D
+	OR	A
+	JR	Z,EDT_RD3
+	DEC	HL
+	LD	A,(HL)
+	CP	021H
+	JR	NC,EDT_RD4
+	DEC	D
+	JR	EDT_RD2
+EDT_RD3:
+	LD	HL,EDT_CUR
+	JR	EDT_RD5
+EDT_RD4:
+	INC	HL
+EDT_RD5:
+	LD	(HL),0
+	LD	A,D
+	POP	DE
+	RET
+
+;	カーソルが入力行の末尾にある → Z  (EDT_TLEN=入力行の長さ)
+EDT_ATEND:
+	CALL	_POS
+	LD	DE,(EDT_START)
+	LD	A,H
+	CP	D
+	RET	NZ
+	LD	A,(EDT_TLEN)
+	ADD	A,E
+	CP	L
+	RET
+
+;	入力行を HL の文字列で置き換える。入りきらなければ CF=1 (何も変えない)
+EDT_SET:
+	PUSH	HL
+	CALL	EDT_RD
+	LD	(EDT_OLDL),A
+	POP	HL
+	LD	B,0
+	PUSH	HL
+EDT_SET0:
+	LD	A,(HL)
+	OR	A
+	JR	Z,EDT_SET1
+	INC	HL
+	INC	B
+	JR	EDT_SET0
+EDT_SET1:
+	POP	HL
+	LD	A,(EDT_START)
+	ADD	A,B
+	PUSH	HL
+	LD	HL,WIDM1
+	CP	(HL)
+	POP	HL
+	CCF
+	RET	C
+	LD	A,B
+	LD	(EDT_NEWL),A
+	LD	A,(INSFLG)
+	PUSH	AF
+	LD	A,1			;挿入モードを一時的に切る
+	LD	(INSFLG),A
+	PUSH	HL
+	LD	HL,(EDT_START)
+	CALL	LOC
+	POP	HL
+EDT_SET2:
+	LD	A,(HL)
+	OR	A
+	JR	Z,EDT_SET3
+	LD	E,A
+	PUSH	HL
+	CALL	_PRINT
+	POP	HL
+	INC	HL
+	JR	EDT_SET2
+EDT_SET3:
+	LD	A,(EDT_OLDL)
+	LD	HL,EDT_NEWL
+	SUB	(HL)
+	JR	C,EDT_SET5
+	JR	Z,EDT_SET5
+	LD	B,A
+EDT_SET4:
+	LD	E,' '
+	PUSH	BC
+	CALL	_PRINT
+	POP	BC
+	DJNZ	EDT_SET4
+EDT_SET5:
+	LD	HL,(EDT_START)
+	LD	A,(EDT_NEWL)
+	ADD	A,L
+	LD	L,A
+	CALL	LOC
+	POP	AF
+	LD	(INSFLG),A
+	OR	A
+	RET
+
+EDT_STRCPY:
+	LD	A,(HL)
+	LD	(DE),A
+	INC	HL
+	INC	DE
+	OR	A
+	JR	NZ,EDT_STRCPY
+	RET
+
+;	---- 履歴 ----
+;	A=年齢(0=最新) → HL=エントリ
+EDT_ENT:
+	LD	B,A
+	LD	A,(EDT_HEAD)
+	ADD	A,EDT_N-1
+	SUB	B
+	CP	EDT_N
+	JR	C,EDT_SLOT
+	SUB	EDT_N
+;	A=スロット → HL=エントリ
+EDT_SLOT:
+	LD	L,A
+	LD	H,0
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,HL
+	LD	D,H
+	LD	E,L
+	ADD	HL,HL
+	ADD	HL,HL
+	ADD	HL,DE
+	LD	DE,EDT_HBUF
+	ADD	HL,DE
+	RET
+
+;	HL=文字列が EDT_PFX で始まる → Z (大文字小文字は区別しない)
+EDT_PT:
+	PUSH	HL
+	LD	DE,EDT_PFX
+EDT_PT1:
+	LD	A,(DE)
+	OR	A
+	JR	Z,EDT_PT9
+	CALL	CAP
+	LD	B,A
+	LD	A,(HL)
+	CALL	CAP
+	CP	B
+	JR	NZ,EDT_PT9
+	INC	HL
+	INC	DE
+	JR	EDT_PT1
+EDT_PT9:
+	POP	HL
+	RET
+
+;	HL=エントリ → Z なら検索キーに合う (HL 保存)
+EDT_MATCH:
+	PUSH	HL
+	LD	A,(EDT_SUB)
+	OR	A
+	JR	NZ,EDT_MT1
+	CALL	EDT_PT
+	POP	HL
+	RET
+EDT_MT1:
+	CALL	EDT_PT
+	JR	Z,EDT_MT9
+	LD	A,(HL)
+	OR	A
+	JR	Z,EDT_MT8
+	INC	HL
+	JR	EDT_MT1
+EDT_MT8:
+	OR	1			;NZ
+EDT_MT9:
+	POP	HL
+	RET
+
+;	古い方へ
+EDT_PREV:
+	LD	A,(EDT_POS)
+	CP	0FFH
+	JR	NZ,EDT_PV1
+	CALL	EDT_RD			;入力中の行を保存し、検索キーにする
+	LD	HL,EDT_CUR
+	LD	DE,EDT_SAVE
+	CALL	EDT_STRCPY
+	LD	HL,EDT_CUR
+	LD	DE,EDT_PFX
+	CALL	EDT_STRCPY
+	LD	A,0FFH
+EDT_PV1:
+	INC	A
+EDT_PV2:
+	LD	C,A
+	LD	A,(EDT_CNT)
+	CP	C
+	JR	Z,EDT_PVN
+	JR	C,EDT_PVN
+	LD	A,C
+	CALL	EDT_ENT
+	CALL	EDT_MATCH
+	JR	NZ,EDT_PV3
+	PUSH	BC
+	CALL	EDT_SET
+	POP	BC
+	JR	NC,EDT_PVOK
+EDT_PV3:
+	INC	C
+	LD	A,C
+	JR	EDT_PV2
+EDT_PVOK:
+	LD	A,C
+	LD	(EDT_POS),A
+	RET
+EDT_PVN:
+	JP	EDT_BEEP
+
+;	新しい方へ
+EDT_NEXT:
+	LD	A,(EDT_POS)
+	CP	0FFH
+	JP	Z,EDT_BEEP
+	LD	C,A
+EDT_NX1:
+	LD	A,C
+	OR	A
+	JR	Z,EDT_NXL
+	DEC	C
+	LD	A,C
+	CALL	EDT_ENT
+	CALL	EDT_MATCH
+	JR	NZ,EDT_NX1
+	PUSH	BC
+	CALL	EDT_SET
+	POP	BC
+	JR	C,EDT_NX1
+	LD	A,C
+	LD	(EDT_POS),A
+	RET
+EDT_NXL:
+	LD	A,0FFH
+	LD	(EDT_POS),A
+	LD	HL,EDT_SAVE
+	JP	EDT_SET
+
+;	HL=文字列 の等価 (DE=文字列) → Z
+EDT_SEQ:
+	LD	A,(DE)
+	CP	(HL)
+	RET	NZ
+	OR	A
+	RET	Z
+	INC	HL
+	INC	DE
+	JR	EDT_SEQ
+
+;	入力された行(KBUF)を履歴へ追加。履歴ファイルが有効なら1行追記
+EDT_ADD:
+	PUSH	AF
+	PUSH	BC
+	PUSH	DE
+	PUSH	HL
+	LD	HL,KBUF
+	CALL	EDT_PUT
+	JR	NC,EDT_AD9
+	LD	A,(EDT_HON)
+	OR	A
+	JR	Z,EDT_AD9
+	LD	HL,KBUF
+	CALL	HF_APPEND
+EDT_AD9:
+	POP	HL
+	POP	DE
+	POP	BC
+	POP	AF
+	RET
+
+;	HL=文字列(0終端)を履歴の末尾へ入れる。空・直前と同じなら入れない。入れたら CF=1
+EDT_PUT:
+	LD	(EDT_SRC),HL
+	LD	A,(HL)
+	OR	A
+	JR	Z,EDT_PX
+	LD	A,(EDT_CNT)
+	OR	A
+	JR	Z,EDT_PA
+	XOR	A
+	CALL	EDT_ENT
+	LD	DE,(EDT_SRC)
+	CALL	EDT_SEQ
+	JR	Z,EDT_PX
+EDT_PA:
+	LD	A,(EDT_HEAD)
+	CALL	EDT_SLOT
+	EX	DE,HL
+	LD	HL,(EDT_SRC)
+	LD	B,EDT_L-1
+EDT_P3:
+	LD	A,(HL)
+	OR	A
+	JR	Z,EDT_P4
+	LD	(DE),A
+	INC	HL
+	INC	DE
+	DJNZ	EDT_P3
+EDT_P4:
+	XOR	A
+	LD	(DE),A
+	LD	A,(EDT_HEAD)
+	INC	A
+	CP	EDT_N
+	JR	C,EDT_P5
+	XOR	A
+EDT_P5:
+	LD	(EDT_HEAD),A
+	LD	A,(EDT_CNT)
+	CP	EDT_N
+	JR	NC,EDT_P6
+	INC	A
+	LD	(EDT_CNT),A
+EDT_P6:
+	SCF
+	RET
+EDT_PX:
+	AND	A
+	RET
+
+;	---- TAB補完 ----
+EDT_TAB:
+	CALL	EDT_RD
+	LD	(EDT_TLEN),A
+	CALL	EDT_ATEND
+	JP	NZ,EDT_BEEP
+	LD	A,(EDT_TLEN)
+	OR	A
+	LD	C,0			;単語の開始位置
+	LD	D,0			;非空白を見たか
+	LD	E,1			;1語目か
+	JR	Z,EDT_T3
+	LD	B,A
+	LD	HL,EDT_CUR
+EDT_T1:
+	LD	A,(HL)
+	INC	HL
+	CP	' '
+	JR	Z,EDT_T2
+	LD	D,1
+	JR	EDT_T4
+EDT_T2:
+	LD	A,D
+	OR	A
+	JR	Z,EDT_T2A
+	LD	E,0
+EDT_T2A:
+	LD	A,(EDT_TLEN)
+	SUB	B
+	INC	A
+	LD	C,A
+EDT_T4:
+	DJNZ	EDT_T1
+EDT_T3:
+	LD	A,E
+	LD	(EDT_FIRST),A
+	LD	A,C
+	LD	(EDT_WST),A
+	LD	B,A
+	LD	A,(EDT_TLEN)
+	SUB	B
+	LD	(EDT_CLEN),A
+	CP	13
+	JP	NC,EDT_BEEP
+	LD	HL,EDT_CUR
+	LD	A,(EDT_WST)
+	LD	E,A
+	LD	D,0
+	ADD	HL,DE
+	LD	DE,EDT_PAT
+	LD	C,0			;bit0=. bit1=大文字 bit2=小文字
+	LD	A,(EDT_CLEN)
+	OR	A
+	JR	Z,EDT_T10
+	LD	B,A
+EDT_T6:
+	LD	A,(HL)
+	CP	':'
+	JP	Z,EDT_BEEP
+	CP	05CH
+	JP	Z,EDT_BEEP
+	CP	'/'
+	JP	Z,EDT_BEEP
+	CP	'.'
+	JR	NZ,EDT_T7
+	SET	0,C
+EDT_T7:
+	CP	'A'
+	JR	C,EDT_T8
+	CP	'Z'+1
+	JR	NC,EDT_T9
+	SET	1,C
+	JR	EDT_T8
+EDT_T9:
+	CP	'a'
+	JR	C,EDT_T8
+	CP	'z'+1
+	JR	NC,EDT_T8
+	SET	2,C
+EDT_T8:
+	LD	(DE),A
+	INC	HL
+	INC	DE
+	DJNZ	EDT_T6
+EDT_T10:
+	LD	A,'*'
+	LD	(DE),A
+	INC	DE
+	BIT	0,C
+	JR	NZ,EDT_T11
+	LD	A,'.'
+	LD	(DE),A
+	INC	DE
+	LD	A,'*'
+	LD	(DE),A
+	INC	DE
+EDT_T11:
+	XOR	A
+	LD	(DE),A
+	LD	A,C
+	AND	6
+	CP	2
+	LD	A,1
+	JR	NZ,EDT_T12
+	XOR	A			;大文字だけで打っているときは大文字で補完
+EDT_T12:
+	LD	(EDT_LOW),A
+	XOR	A
+	LD	(EDT_LIST),A
+	CALL	EDT_SCAN
+	CALL	SETDTA1
+	LD	A,(EDT_NC)
+	OR	A
+	JP	Z,EDT_BEEP
+;	補完後の行 = 単語の前 + 共通部分 + (候補が1つなら ' ' か '\')
+	LD	HL,EDT_CUR
+	LD	DE,EDT_NEW
+	LD	A,(EDT_WST)
+	OR	A
+	JR	Z,EDT_T14
+	LD	B,A
+EDT_T13:
+	LD	A,(HL)
+	LD	(DE),A
+	INC	HL
+	INC	DE
+	DJNZ	EDT_T13
+EDT_T14:
+	LD	HL,EDT_COM
+EDT_T15:
+	LD	A,(HL)
+	OR	A
+	JR	Z,EDT_T16
+	LD	(DE),A
+	INC	HL
+	INC	DE
+	JR	EDT_T15
+EDT_T16:
+	LD	A,(EDT_NC)
+	CP	1
+	JR	NZ,EDT_T17
+	LD	B,' '
+	LD	A,(EDT_MDIR)
+	OR	A
+	JR	Z,EDT_T16A
+	LD	B,05CH
+EDT_T16A:
+	LD	A,B
+	LD	(DE),A
+	INC	DE
+EDT_T17:
+	XOR	A
+	LD	(DE),A
+	EX	DE,HL
+	LD	DE,EDT_NEW
+	OR	A
+	SBC	HL,DE
+	LD	A,(EDT_TLEN)
+	CP	L
+	JR	NZ,EDT_T20
+;	進まない: 候補が複数なら一覧を出す
+	LD	A,(EDT_NC)
+	CP	2
+	JP	C,EDT_BEEP
+	LD	HL,EDT_CUR
+	LD	DE,EDT_NEW
+	CALL	EDT_STRCPY		;入力中の行を退避(EDT_SET が EDT_CUR を壊す)
+	LD	A,(INSFLG)
+	PUSH	AF
+	LD	A,1
+	LD	(INSFLG),A
+	LD	E,3
+	CALL	_PRINT
+	LD	A,1
+	LD	(EDT_LIST),A
+	CALL	EDT_SCAN
+	XOR	A
+	LD	(EDT_LIST),A
+	CALL	SETDTA1
+	LD	E,3
+	CALL	_PRINT
+	LD	A,(_DVSW)
+	ADD	A,'A'
+	LD	E,A
+	CALL	_PRINT
+	LD	E,'>'
+	CALL	_PRINT
+	CALL	_POS
+	LD	(EDT_START),HL
+	POP	AF
+	LD	(INSFLG),A
+	LD	HL,EDT_NEW
+	JP	EDT_SET
+EDT_T20:
+	LD	HL,EDT_NEW
+	CALL	EDT_SET
+	RET	NC
+	JP	EDT_BEEP
+
+;	候補を集める(EDT_LIST=1 のときは表示する)
+EDT_SCAN:
+	XOR	A
+	LD	(EDT_NC),A
+	LD	DE,EDT_PAT
+	CALL	FILE
+	LD	HL,FDRV+1
+	CALL	CWILD1
+	LD	A,0F1H
+	LD	(FDRV+13),A
+	CALL	OPEN1
+EDT_SC1:
+	OR	A
+	JR	NZ,EDT_SC2
+	CALL	EDT_FILE
+	CALL	OPEN2
+	JR	EDT_SC1
+EDT_SC2:
+	LD	A,(EDT_FIRST)
+	OR	A
+	RET	Z
+	LD	HL,COMTB
+	LD	B,COMS
+EDT_SC3:
+	PUSH	BC
+	PUSH	HL
+	CALL	EDT_INT
+	POP	HL
+	LD	DE,6
+	ADD	HL,DE
+	POP	BC
+	DJNZ	EDT_SC3
+	RET
+
+;	ディレクトリエントリ(DTA_CCP+1)を候補にする
+EDT_FILE:
+	LD	A,(DTA_CCP+1)
+	CP	'.'
+	RET	Z
+	LD	A,(DTA_CCP+1+0BH)
+	AND	010H
+	LD	(EDT_DIRF),A
+	LD	A,(EDT_FIRST)
+	OR	A
+	JR	Z,EDT_F1
+	LD	A,(EDT_DIRF)		;1語目はコマンド(.COM .BAT)だけ
+	OR	A
+	RET	NZ
+	LD	HL,DTA_CCP+1+8
+	LD	DE,EDT_XCOM
+	CALL	EDT_CMP3
+	JR	Z,EDT_F1
+	LD	HL,DTA_CCP+1+8
+	LD	DE,EDT_XBAT
+	CALL	EDT_CMP3
+	RET	NZ
+EDT_F1:
+	LD	HL,DTA_CCP+1
+	LD	DE,EDT_CAND
+	LD	B,8
+EDT_F2:
+	LD	A,(HL)
+	CP	021H
+	JR	C,EDT_F3
+	CALL	EDT_CASE
+	LD	(DE),A
+	INC	DE
+	INC	HL
+	DJNZ	EDT_F2
+EDT_F3:
+	LD	A,(EDT_FIRST)
+	OR	A
+	JR	NZ,EDT_F6
+	LD	A,(DTA_CCP+1+8)
+	CP	021H
+	JR	C,EDT_F6
+	LD	A,'.'
+	LD	(DE),A
+	INC	DE
+	LD	HL,DTA_CCP+1+8
+	LD	B,3
+EDT_F4:
+	LD	A,(HL)
+	CP	021H
+	JR	C,EDT_F6
+	CALL	EDT_CASE
+	LD	(DE),A
+	INC	DE
+	INC	HL
+	DJNZ	EDT_F4
+EDT_F6:
+	XOR	A
+	LD	(DE),A
+	JR	EDT_CMATCH
+
+;	内部コマンド名(HL=4文字)を候補にする
+EDT_INT:
+	XOR	A
+	LD	(EDT_DIRF),A
+	LD	DE,EDT_CAND
+	LD	B,4
+EDT_I1:
+	LD	A,(HL)
+	CP	021H
+	JR	C,EDT_I2
+	CALL	EDT_CASE
+	LD	(DE),A
+	INC	DE
+	INC	HL
+	DJNZ	EDT_I1
+EDT_I2:
+	XOR	A
+	LD	(DE),A
+
+;	EDT_CAND が入力した単語で始まれば候補に加える
+EDT_CMATCH:
+	LD	A,(EDT_CLEN)
+	OR	A
+	JR	Z,EDT_ACAND
+	LD	B,A
+	LD	A,(EDT_WST)
+	LD	E,A
+	LD	D,0
+	LD	HL,EDT_CUR
+	ADD	HL,DE
+	LD	DE,EDT_CAND
+EDT_CM1:
+	LD	A,(DE)
+	CALL	CAP
+	LD	C,A
+	LD	A,(HL)
+	CALL	CAP
+	CP	C
+	RET	NZ
+	INC	HL
+	INC	DE
+	DJNZ	EDT_CM1
+EDT_ACAND:
+	LD	A,(EDT_LIST)
+	OR	A
+	JR	NZ,EDT_AL
+	LD	A,(EDT_NC)
+	OR	A
+	JR	NZ,EDT_AC2
+	LD	A,(EDT_DIRF)
+	LD	(EDT_MDIR),A
+	LD	HL,EDT_CAND
+	LD	DE,EDT_COM
+	CALL	EDT_STRCPY
+	LD	A,1
+	LD	(EDT_NC),A
+	RET
+EDT_AC2:
+	LD	HL,EDT_COM
+	LD	DE,EDT_CAND
+EDT_AC3:
+	LD	A,(DE)
+	CALL	CAP
+	LD	B,A
+	LD	A,(HL)
+	CALL	CAP
+	CP	B
+	JR	NZ,EDT_AC4
+	OR	A
+	JR	Z,EDT_AC5
+	INC	HL
+	INC	DE
+	JR	EDT_AC3
+EDT_AC4:
+	LD	(HL),0
+	JR	EDT_AC6
+EDT_AC5:
+	LD	A,(EDT_NC)		;候補と共通部分が全く同じ: 1つだけなら数え増さない
+	CP	1
+	RET	Z
+EDT_AC6:
+	LD	A,(EDT_NC)
+	CP	0FFH
+	RET	Z
+	INC	A
+	LD	(EDT_NC),A
+	RET
+
+;	候補を表示(行がいっぱいなら改行)
+EDT_AL:
+	LD	HL,EDT_CAND
+	LD	B,0
+EDT_AL1:
+	LD	A,(HL)
+	OR	A
+	JR	Z,EDT_AL2
+	INC	HL
+	INC	B
+	JR	EDT_AL1
+EDT_AL2:
+	CALL	_POS
+	LD	A,L
+	ADD	A,B
+	ADD	A,3
+	PUSH	HL
+	LD	HL,WIDTHV
+	CP	(HL)
+	POP	HL
+	JR	C,EDT_AL3
+	LD	E,3
+	PUSH	BC
+	CALL	_PRINT
+	POP	BC
+EDT_AL3:
+	LD	HL,EDT_CAND
+EDT_AL4:
+	LD	A,(HL)
+	OR	A
+	JR	Z,EDT_AL5
+	LD	E,A
+	PUSH	HL
+	CALL	_PRINT
+	POP	HL
+	INC	HL
+	JR	EDT_AL4
+EDT_AL5:
+	LD	E,' '
+	CALL	_PRINT
+	LD	E,' '
+	JP	_PRINT
+
+;	A の英大文字を、EDT_LOW=1 なら小文字にする
+EDT_CASE:
+	CP	'A'
+	RET	C
+	CP	'Z'+1
+	RET	NC
+	PUSH	AF
+	LD	A,(EDT_LOW)
+	OR	A
+	JR	Z,EDT_CS1
+	POP	AF
+	ADD	A,020H
+	RET
+EDT_CS1:
+	POP	AF
+	RET
+
+;	HL と DE の3バイトを比べる → Z
+EDT_CMP3:
+	LD	B,3
+EDT_CP1:
+	LD	A,(DE)
+	CP	(HL)
+	RET	NZ
+	INC	HL
+	INC	DE
+	DJNZ	EDT_CP1
+	RET
+
+EDT_XCOM:	DB	"COM"
+EDT_XBAT:	DB	"BAT"
+
+
+;	================ 履歴ファイル / HIST コマンド ================
+;	HIST          : 履歴を古い順に表示
+;	HIST パス     : 履歴ファイルを設定。あれば末尾(約50行)を履歴に読み込み、以後 Enter ごとに1行追記する
+;	HIST OFF      : 履歴ファイルを使わない
+;	FCB とバッファは カーネル時のバンク5の空き(EDBUF: A000H-)に置く(窓=オーバーレイと重ならない)。
+;	ファイルはLSXの26h/27h(レコードサイズ1=バイト位置)で、M25HND と同じ手順で読み書きする。
+
+HFCB	EQU	EDBUF			;FCB (40B)
+HIOB	EQU	EDBUF+040H		;入出力バッファ (128B)
+HLBUF	EQU	EDBUF+0C0H		;行の組み立て (84B)
+
+C_HIST:
+	CALL	SPCUT
+	CP	021H
+	JR	C,HI_LIST
+	PUSH	DE			;"OFF" か
+	LD	HL,HI_OFF
+	LD	B,3
+HI_C1:
+	LD	A,(DE)
+	AND	0DFH
+	CP	(HL)
+	JR	NZ,HI_NOFF
+	INC	DE
+	INC	HL
+	DJNZ	HI_C1
+	LD	A,(DE)
+	CP	021H
+	JR	NC,HI_NOFF
+	POP	DE
+	XOR	A
+	LD	(EDT_HON),A
+	RET
+HI_NOFF:
+	POP	DE
+	LD	HL,EDT_HPATH		;パスを保存
+	LD	B,46
+HI_CP:
+	LD	A,(DE)
+	CP	021H
+	JR	C,HI_CPE
+	LD	(HL),A
+	INC	HL
+	INC	DE
+	DJNZ	HI_CP
+HI_CPE:
+	LD	(HL),0
+	LD	A,1
+	LD	(EDT_HON),A
+	CALL	HF_LOAD
+	AND	A
+	RET
+HI_OFF:	DB	"OFF"
+
+HI_LIST:				;古い順に表示
+	LD	A,(EDT_CNT)
+	OR	A
+	JR	Z,HI_L9
+	LD	B,A
+HI_L1:
+	PUSH	BC
+	LD	A,B
+	DEC	A			;年齢 = B-1 (古い方から)
+	CALL	EDT_ENT
+HI_L2:
+	LD	A,(HL)
+	INC	HL
+	OR	A
+	JR	Z,HI_L3
+	PUSH	HL
+	CALL	MSG_A
+	POP	HL
+	JR	HI_L2
+HI_L3:
+	CALL	LTNL
+	POP	BC
+	DJNZ	HI_L1
+HI_L9:
+	AND	A
+	RET
+
+;	パス(EDT_HPATH)を HFCB に解析。CF=1:失敗
+HF_PARSE:
+	LD	HL,HFCB
+	LD	D,H
+	LD	E,L
+	INC	DE
+	LD	(HL),0
+	LD	BC,39
+	LDIR
+	LD	HL,HFCB
+	LD	DE,EDT_HPATH
+	CALL	_SYS29
+	LD	A,(HFCB+1)
+	CP	020H
+	SCF
+	RET	Z
+	AND	A
+	RET
+
+;	HFCB を開く。CF=1:ない/失敗
+HF_OPEN:
+	CALL	HF_PARSE
+	RET	C
+	LD	C,00FH
+	LD	DE,HFCB
+	CALL	BDOS0
+	LD	A,(HFCB+28)		;LSXは FFH が成功 (M25HND の H_OPEN と同じ)
+	CP	0FFH
+	SCF
+	CCF
+	RET	Z
+	SCF
+	RET
+
+;	HFCB を作る。CF=1:失敗
+HF_MAKE:
+	CALL	HF_PARSE
+	RET	C
+	LD	C,016H
+	LD	DE,HFCB
+	CALL	BDOS0
+	LD	A,(HFCB+28)		;FFH が成功
+	CP	0FFH
+	SCF
+	CCF
+	RET	Z
+	SCF
+	RET
+
+;	HF_POS の位置から HL バイトを C=26h(書く)/27h(読む) で HIOB と転送。CF=1:失敗
+HF_RW:
+	LD	A,1
+	LD	(HFCB+14),A
+	XOR	A
+	LD	(HFCB+15),A
+	LD	(HFCB+32),A
+	LD	A,(HF_POS)
+	LD	(HFCB+33),A
+	LD	A,(HF_POS+1)
+	LD	(HFCB+34),A
+	LD	A,(HF_POS+2)
+	LD	(HFCB+35),A
+	LD	A,(HF_POS+3)
+	LD	(HFCB+36),A
+	PUSH	HL
+	LD	HL,(_DTA)
+	LD	(HF_DTA),HL
+	LD	HL,HIOB
+	LD	(_DTA),HL
+	POP	HL
+	LD	DE,HFCB
+	CALL	BDOS0
+	PUSH	AF
+	LD	HL,(HF_DTA)
+	LD	(_DTA),HL
+	POP	AF
+	RET
+HF_DTA:	DW	0
+
+;	履歴ファイルを開き、末尾の約3968バイトを行に分けて履歴へ入れる。ないときは何もしない
+HF_LOAD:
+	XOR	A
+	LD	(EDT_HLN),A
+	LD	(EDT_HSK),A
+	CALL	HF_OPEN
+	RET	C
+	LD	HL,(HFCB+16)
+	LD	DE,(HFCB+18)
+	LD	(HF_END),HL
+	LD	(HF_END+2),DE
+	LD	BC,3968
+	AND	A
+	SBC	HL,BC
+	EX	DE,HL			;DE=低位の差、HL=元の上位
+	LD	BC,0
+	SBC	HL,BC
+	JR	NC,HFL1
+	LD	DE,0			;ファイルが短い: 先頭から
+	LD	HL,0
+	JR	HFL2
+HFL1:
+	LD	A,1
+	LD	(EDT_HSK),A		;途中から読むので最初の不完全な行は捨てる
+HFL2:
+	LD	(HF_POS),DE
+	LD	(HF_POS+2),HL
+HFL3:					;残り = HF_END - HF_POS
+	LD	HL,(HF_END)
+	LD	DE,(HF_POS)
+	AND	A
+	SBC	HL,DE
+	PUSH	HL
+	LD	HL,(HF_END+2)
+	LD	DE,(HF_POS+2)
+	SBC	HL,DE
+	POP	HL
+	JR	C,HFL9
+	JR	NZ,HFL4			;上位が残っている: 128
+	LD	A,H
+	OR	L
+	JR	Z,HFL9			;残り0
+	LD	A,H
+	OR	A
+	JR	NZ,HFL4
+	LD	A,L
+	CP	129
+	JR	C,HFL5
+HFL4:
+	LD	HL,128
+HFL5:
+	LD	(HF_N),HL
+	LD	C,027H
+	CALL	HF_RW
+	JR	C,HFL9
+	LD	HL,(HF_N)		;位置を進める
+	LD	DE,(HF_POS)
+	ADD	HL,DE
+	LD	(HF_POS),HL
+	JR	NC,HFL6
+	LD	HL,(HF_POS+2)
+	INC	HL
+	LD	(HF_POS+2),HL
+HFL6:
+	LD	BC,(HF_N)		;HIOB の BC バイトを処理
+	LD	HL,HIOB
+HFL7:
+	LD	A,(HL)
+	INC	HL
+	PUSH	BC
+	PUSH	HL
+	CALL	HF_BYTE
+	POP	HL
+	POP	BC
+	DEC	BC
+	LD	A,B
+	OR	C
+	JR	NZ,HFL7
+	JR	HFL3
+HFL9:
+	LD	C,010H			;閉じる
+	LD	DE,HFCB
+	CALL	BDOS0
+	LD	A,(EDT_HSK)
+	OR	A
+	RET	NZ
+	JP	HF_EOL			;最後の行(改行なし)があれば入れる
+
+;	A=1バイト
+HF_BYTE:
+	LD	B,A
+	LD	A,(EDT_HSK)
+	OR	A
+	JR	Z,HFB1
+	LD	A,B
+	CP	0AH
+	RET	NZ
+	XOR	A
+	LD	(EDT_HSK),A
+	RET
+HFB1:
+	LD	A,B
+	CP	0AH
+	JR	Z,HF_EOL
+	CP	0DH
+	RET	Z
+	CP	020H
+	RET	C
+	LD	C,A
+	LD	A,(EDT_HLN)
+	CP	EDT_L-1
+	RET	NC
+	LD	E,A
+	LD	D,0
+	LD	HL,HLBUF
+	ADD	HL,DE
+	LD	(HL),C
+	INC	A
+	LD	(EDT_HLN),A
+	RET
+HF_EOL:
+	LD	A,(EDT_HLN)
+	OR	A
+	RET	Z
+	LD	E,A
+	LD	D,0
+	LD	HL,HLBUF
+	ADD	HL,DE
+	LD	(HL),0
+	XOR	A
+	LD	(EDT_HLN),A
+	LD	HL,HLBUF
+	JP	EDT_PUT
+
+;	HL=文字列を履歴ファイルの末尾に CR LF 付きで追記する(失敗しても何もしない)
+HF_APPEND:
+	LD	DE,HIOB
+	LD	B,0
+HFA1:
+	LD	A,(HL)
+	OR	A
+	JR	Z,HFA2
+	LD	(DE),A
+	INC	HL
+	INC	DE
+	INC	B
+	LD	A,B
+	CP	EDT_L
+	JR	C,HFA1
+HFA2:
+	LD	A,0DH
+	LD	(DE),A
+	INC	DE
+	LD	A,0AH
+	LD	(DE),A
+	INC	B
+	INC	B
+	LD	A,B
+	LD	(HF_N),A
+	XOR	A
+	LD	(HF_N+1),A
+	CALL	HF_OPEN
+	JR	NC,HFA3
+	CALL	HF_MAKE
+	RET	C
+HFA3:
+	LD	HL,(HFCB+16)		;末尾 = ファイルの大きさ
+	LD	(HF_POS),HL
+	LD	HL,(HFCB+18)
+	LD	(HF_POS+2),HL
+	LD	HL,(HF_N)
+	LD	C,026H
+	CALL	HF_RW
+	LD	C,010H
+	LD	DE,HFCB
+	CALL	BDOS0
+	RET

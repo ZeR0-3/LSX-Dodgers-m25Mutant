@@ -1,0 +1,18 @@
+
+;	LSX-Dodgers CCP2
+;	MZ-2500
+
+	DB	"IMON"	;9 (IOCSのモニタ。IOCS非依存の MON は外部コマンド MON.COM)
+	DW	C_MON
+	DB	"SET "	;10
+	DW	C_SET
+	DB	"ENV "	;11
+	DW	C_ENV
+	DB	"GOTO"	;12
+	DW	C_GOTO
+	DB	"IF  "	;13
+	DW	C_IF
+	DB	"MODE"	;14
+	DW	C_MODE
+	DB	"HIST"	;15
+	DW	C_HIST
