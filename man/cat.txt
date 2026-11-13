@@ -1,0 +1,4 @@
+CAT  ファイルを連結して表示
+
+  cat [file ...]      引数なしなら標準入力(Ctrl-Z で終わり)
+  cat a.txt b.txt > c.txt        cat con > file   キー入力をファイルへ

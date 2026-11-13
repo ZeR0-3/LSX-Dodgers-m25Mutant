@@ -1,0 +1,88 @@
+diff -ru ../emu/mz2500-web-emulator-main/core/d88.cpp core/d88.cpp
+--- ../emu/mz2500-web-emulator-main/core/d88.cpp	2026-09-10 23:29:48.000000000 +0900
++++ core/d88.cpp	2026-11-09 11:03:38.895270073 +0900
+@@ -462,6 +462,33 @@
+     return true;
+ }
+ 
++bool D88Disk::read_ipl_record(int record, uint8_t* dst) const {
++    const int i = record ^ 0x10;
++    return read_decoded(i / 32, (i / 16) & 1, i % 16 + 1, dst, SECTOR_SIZE);
++}
++
++bool D88Disk::is_iplpro_record_compatible() const {
++    uint8_t header[SECTOR_SIZE] = {};
++    if (!read_decoded(0, 1, 1, header, sizeof(header))) return false;
++    if (header[0] != 0x01 || std::memcmp(header + 1, "IPLPRO", 6) != 0)
++        return false;
++    int bank_count = 0;
++    bool terminated = false;
++    for (int index = 0; index < 16; index++) {
++        const uint8_t bank = header[0x20 + index];
++        if (bank == 0xFF) { terminated = true; break; }
++        if (bank >= 0x40) return false;
++        bank_count++;
++    }
++    if (!terminated || bank_count == 0) return false;
++    const int start = header[0x1E] | (header[0x1F] << 8);
++    if (start < 16) return false;   // 0..15 is the header track itself
++    uint8_t tmp[SECTOR_SIZE];
++    for (int n = 0; n < bank_count * 32; n++)
++        if (!read_ipl_record(start + n, tmp)) return false;
++    return true;
++}
++
+ D88Disk::Sector* D88Disk::find_sector_mut(int cylinder, int side, int sector) {
+     return const_cast<Sector*>(find_sector(cylinder, side, sector));
+ }
+diff -ru ../emu/mz2500-web-emulator-main/core/d88.h core/d88.h
+--- ../emu/mz2500-web-emulator-main/core/d88.h	2026-09-10 23:29:48.000000000 +0900
++++ core/d88.h	2026-11-09 11:03:38.895106882 +0900
+@@ -128,6 +128,11 @@
+     // source order C=n/H=0 then C=n+1/H=1 for each listed destination bank.
+     // No LBA arithmetic is used for this check.
+     bool is_iplpro_compatible() const;
++    // IPLPRO header at C0/H1/R1 whose payload is addressed by record number
++    // (header[0x1E] = first record, 32 records per bank), as the real IPL reads
++    // standard-format boot disks. record r -> i=r^10h: C=i/32, H=(i/16)&1, R=i%16+1
++    bool is_iplpro_record_compatible() const;
++    bool read_ipl_record(int record, uint8_t* dst) const;
+ 
+     // Writable view of a sector's stored bytes. Returns nullptr when the
+     // sector is not on the disk, its N/data pair is not a supported complete
+diff -ru ../emu/mz2500-web-emulator-main/core/dummy_ipl.cpp core/dummy_ipl.cpp
+--- ../emu/mz2500-web-emulator-main/core/dummy_ipl.cpp	2026-09-10 23:29:48.000000000 +0900
++++ core/dummy_ipl.cpp	2026-11-09 11:03:38.897429613 +0900
+@@ -219,6 +219,20 @@
+         return false;
+     }
+ 
++    // Standard-format boot disks (e.g. LSX): payload addressed by record number
++    // starting at header[0x1E], like the real IPL reads them.
++    if (!boot_disk.is_iplpro_compatible()) {
++        const int start = header[0x1E] | (header[0x1F] << 8);
++        auto load_bank_rec = [&](int index, int, uint8_t* dest) -> bool {
++            for (int s = 0; s < 32; s++)
++                if (!boot_disk.read_ipl_record(start + index * 32 + s,
++                                               dest + s * D88Disk::SECTOR_SIZE))
++                    return false;
++            return true;
++        };
++        return native_boot_with_header(header, load_bank_rec, "FD1 (record)");
++    }
++
+     auto load_bank = [&](int index, int payload_count, uint8_t* dest) -> bool {
+         const bool legacy_single_bank = payload_count == 1;
+         const int first_cylinder = legacy_single_bank ? 0 : index;
+diff -ru ../emu/mz2500-web-emulator-main/core/mz2500.h core/mz2500.h
+--- ../emu/mz2500-web-emulator-main/core/mz2500.h	2026-09-10 23:29:48.000000000 +0900
++++ core/mz2500.h	2026-11-09 11:03:38.897042498 +0900
+@@ -67,7 +67,7 @@
+         if (!disk.loaded()) return DiskBootProfile::NoDisk;
+         if (disk_boot_issue(drive) != DiskBootIssue::None)
+             return DiskBootProfile::Invalid;
+-        return disk.is_iplpro_compatible()
++        return (disk.is_iplpro_compatible() || disk.is_iplpro_record_compatible())
+             ? DiskBootProfile::IplProCompatible
+             : DiskBootProfile::RealIplRequired;
+     }

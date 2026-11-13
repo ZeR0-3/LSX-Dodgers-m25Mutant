@@ -1,0 +1,8 @@
+__pycache__/
+*.o
+*.bin
+*.map
+*.lis
+*.sym
+_run_all.sh
+*.rom

@@ -1,0 +1,26 @@
+AWK  パターン処理(awk の部分集合。数は整数だけ)
+
+  awk [-F 区切り] [-v 変数=値] [-f プログラムfile | "プログラム"] [file ...]
+  file 省略=標準入力。 -F t または -F \t = タブ。 区切りが2文字以上なら正規表現。
+  プログラム = パターン { 動作 } の並び。  BEGIN { }  END { }  式 { }  /正規表現/ { }
+  { } 省略=print。 範囲パターン(a,b)・ユーザー関数・getline < file・printf の %f は無い。
+
+[文]   if (c) s [else s]   while (c) s   do s while (c)   for (i=0;i<n;i++) s   for (k in a) s
+       break continue next exit [式]   delete a[k]   delete a   { 文 ; 文 }
+       print [式, ...] [> "file" | >> "file"]    printf 書式, 式, ...
+[式]   = += -= *= /= %= ^=   ?:   || &&   in   ~ !~   < <= == != > >=   (連結)   + -   * / % 
+       ^ (** も可)   ! - +   ++ -- (前置・後置)   $式   a[式]   ( )   getline(次の行を $0 に)
+[変数] NR NF FNR FS OFS ORS FILENAME RSTART RLENGTH   ($0 $1 ... は代入できる。NF への代入は不可)
+[関数] length([s]) substr(s,m[,n]) index(s,t) split(s,a[,fs]) toupper(s) tolower(s) int(x)
+       sprintf(書式,...) sub(re,置換[,var]) gsub(re,置換[,var]) match(s,re) rand() rand(n) srand(n)
+       sub/gsub の第3引数は変数名か $0 だけ。置換の & は一致した文字列。 rand(n)=0..n-1 の整数
+[書式] %d %i %s %c %x %X %o %u %%  (- 0 幅 .精度 が使える。 %f は無い)
+[文字列] "..." と '...' どちらも可。 \n \t \" \\ \/ が使える。 1e2 や 1.5 の小数部は読み捨て。
+
+注意) コマンド行は127文字まで。長いプログラムは -f file で。
+      コマンド行では $ を二つ書く($$1)。プログラム中の " は ' に置き換えるか -f を使う。
+      > や | を含むプログラムは "..." で囲む。 出力の改行は CR+LF にそろえる。
+      0 での割り算はエラー(終了コード 2)。 変数は48個、配列要素は64個、欄は60個まで。
+例) awk -F: "{print $$1}" passwd.txt
+    awk "/red/ {n++} END {print n}" a.txt
+    awk "{s+=$$2} END {print s, s/NR}" a.txt

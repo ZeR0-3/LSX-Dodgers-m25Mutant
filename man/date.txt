@@ -1,0 +1,6 @@
+DATE  日付と時刻(RTC)
+
+  date                      表示  YYYY-MM-DD HH:MM:SS
+  date YYYY-MM-DD           日付を設定(2000-2099年)
+  date HH:MM[:SS]           時刻を設定(24時間)
+  両方を並べて指定してもよい。ファイルの日時にも使われる。

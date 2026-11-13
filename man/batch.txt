@@ -1,0 +1,13 @@
+バッチファイル(.BAT)
+
+  名前を打つと実行されます。1行ずつコマンドを実行します。
+  AUTOEXEC.BAT は起動時に実行されます(path や hist を書いておく)。
+
+  :label              GOTO の行き先(行頭に :)
+  GOTO label          ラベルの次の行から続ける(バッチの先頭から探す)
+  IF [NOT] EXIST file コマンド
+  IF [NOT] 文字列1==文字列2 コマンド
+  $? 終了コード   $1-$9 引数   例) IF NOT $?==0 GOTO err
+  ECHO は外部コマンド(echo.com)。出力は > で書き出せます。
+
+sh.com で zsh/bash 風のスクリプトを .BAT に変換できます(man sh)。
