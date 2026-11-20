@@ -1,0 +1,5 @@
+MORE  1画面ずつ表示
+
+  more [file]       引数なし=標準入力
+  SPACE=次の画面  ENTER=1行  Q / ESC / Ctrl-C=終了
+  標準出力がファイルのときはページ送りしない。   例) dir | more

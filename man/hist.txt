@@ -1,0 +1,11 @@
+HIST  コマンド履歴
+
+  HIST              メモリ上の履歴(50件)を古い順に表示
+  HIST パス         履歴ファイルを設定。あれば末尾約4KBを読み込み、
+                    以後 Enter した行を1行ずつ追記(空行・直前と同じ行は除く)
+  HIST OFF          追記をやめる(メモリ上の履歴は残る)
+
+  HDD の AUTOEXEC.BAT には  hist h:\history.txt  が入っています。
+  フロッピーでは自分で  hist b:\history.txt  などを実行してください。
+  古い分は  cat h:\history.txt | more   grep ... h:\history.txt  で。
+  プログラムの行入力(BDOS 0Ah)は履歴に入りません。

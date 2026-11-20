@@ -3,7 +3,7 @@
 対象: mz2500-web-emulator(C++ コア + CLI + WASM/Web)。このファイルは LSX-Dodgers MZ-2500 移植(別リポジトリ/ツリー)のために行った改造の記録と、同種の改造を AI が安全に進めるための手引き。実機のIPLの動作とは別物で、エミュレータ側の近道である点に注意(実機確認ではない)。
 
 ## 1. 何を変えたか(差分: tools/emu_record_boot.patch 相当)
-従来、簡易IPL(`core/dummy_ipl.cpp`)は「IPLPRO互換」D88だけをROM無しで起動し、それ以外の有効なD88は `DiskBootProfile::RealIplRequired`(=IPL ROM が必要)と判定していた。LSXのブートディスクは次の形で、従来判定から外れていた。
+従来、簡易IPL(`core/dummy_ipl.cpp`)は「IPLPRO互換」D88だけをROM無しで起動し、それ以外の有効なD88は `DiskBootProfile::RealIplRequired`(=ipl.rom が必要)と判定していた。LSXのブートディスクは次の形で、従来判定から外れていた。
 
 - C0/H1/R1 に IPLPRO ヘッダ(256B)。`[0x18..19]`=入口, `[0x1E..1F]`=ペイロードの先頭レコード番号, `[0x20..]`=転送先ページ列(FFh終端), `[0x30..36]`=起動時のバンク0-6割当。ここまでは従来と同じ。
 - ペイロード(8KB/バンク)が **レコード番号**で並ぶ(実IPLと同じ読み方)。従来の簡易IPLは「C=n/H=0 + C=n+1/H=1」の固定配置を仮定しており、LSXディスクの C0/H0 は標準の 512B×9 セクタなので読めず `is_iplpro_compatible()` が false になっていた。
@@ -27,11 +27,11 @@ cmake -B build/native -DCMAKE_BUILD_TYPE=Release && cmake --build build/native -
 build/native/mz2500w-cli --disk-a LSX2500_80col.d88 --frames 900 --trace-boot --type 'dir\r:500' --screen-report
 ```
 - `--trace-boot` に `IPLPRO "LSX-DODGERS" (FD1 (record)) -> 1 x 8KB ... PC=8000h` と出ればこの経路。
-- `--real-ipl --rom-dir DIR` を付けると従来どおり実IPLで起動(この改造の影響を受けない)。**注意**: 改造後は IPL ROM があっても `--real-ipl` を付けない限り簡易IPLを使う(従来は RealIplRequired の時だけ自動で実IPLへ切替えていた)。
+- `--real-ipl --rom-dir DIR` を付けると従来どおり実IPLで起動(この改造の影響を受けない)。**注意**: 改造後は ipl.rom があっても `--real-ipl` を付けない限り簡易IPLを使う(従来は RealIplRequired の時だけ自動で実IPLへ切替えていた)。
 - 主要オプション: `--disk-a/--disk-b IMG`, `--frames N`, `--type 'text\r:FRAME'`(FRAME フレーム時点で入力), `--screen-report`(テキスト画面をダンプ), `--disk-save N:PATH`, `--hdf PATH [--hdf-block N]`(SASI), `--trace-boot`。`./mz2500w-cli` の `--help` 相当は cli/main.cpp 冒頭の usage。
 
 ## 4. Web(WASM)側
-`web/emulator.js` は `Module._emu_disk_boot_profile(0)` の戻り値で分岐する(2=ROM必須→"SPECIAL D88 REQUIRES IPL ROM")。本改造はコアの `disk_boot_profile()` を直すので、**WASM を再ビルドすれば Web も自動で追従**する(JS の変更は不要)。このセッションでは emscripten が無く WASM の再ビルド・動作確認はしていない。`web/dist/emulator.js` は生成物(ビルドで更新される)。
+`web/emulator.js` は `Module._emu_disk_boot_profile(0)` の戻り値で分岐する(2=ROM必須→"SPECIAL D88 REQUIRES IPL.ROM")。本改造はコアの `disk_boot_profile()` を直すので、**WASM を再ビルドすれば Web も自動で追従**する(JS の変更は不要)。このセッションでは emscripten が無く WASM の再ビルド・動作確認はしていない。`web/dist/emulator.js` は生成物(ビルドで更新される)。
 
 ## 5. 改造するときの勘所(AI向け)
 - 構造: `core/` = マシン本体(mz2500.cpp:バス/ポート/メモリ割当, banked_memory:8KB×8 バンク, fdc_mb8877, d88:イメージ, sasi:MZ-1E30, dummy_ipl:ROM無し起動, renderer)。`cli/main.cpp`=ヘッドレス実行(テストはこれ+`--screen-report`)。`wasm/bindings.cpp`=JS用C API。`web/`=フロント。

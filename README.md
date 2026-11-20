@@ -15,6 +15,8 @@ MZ-700/1500 版(`M7*.ASM`)を土台に、機種依存部を `src/M25*.ASM` に�
 ## できること
 - **メモリ**: TPA は 0100H〜DFFFH(約56KB)。バンク切替のゲートでユーザ/カーネルの見え方を分けています(`docs/mmu-stage1.md`、`docs/memory-map.md`)。
 - **システム情報とページの予約**(BDOS E0h-E3h、`sysinfo`): 機能の有無(IOCS・EMM・RAMディスク・SASI)と、物理ページ(8KB)の所有者を調べ、空きページを予約できる(`docs/page-api.md`)。大きなプログラム用。`ramdisk 32` でRAMディスク(F:)を小さく/0で無効にして、空いた拡張RAMのページを他のプログラムが使える。ページの読み書きは `coms/pglib.inc`(`pgread`/`pgwrite`)にまとめてあり、アプリ向けの決まりは `docs/app-memory-guide.md`。
+- **子プログラムの起動**(BDOS E5h `EXEC`): アプリ(エディタなど)のメモリに触れずに外部コマンドを動かして戻れる。コマンド行に `> >> <` と `$変数` は使えるが、**`|` のパイプと `.BAT` は使えない**。空きページが7枚必要(F: が既定の128KBだと足りないので `ramdisk 64` など)。ユーザーが使える空きページは **07h-08h(16KB)** と、F: が使わない拡張RAM(`docs/page-api.md`、`docs/exec-umap.md`)。
+- **実機チェック用 `HWCHECK.COM`**(`docs/hwcheck.md`): 拡張RAMでのコード実行などエミュレータだけで確かめた前提を、実機で確かめるための小さなプログラム。`dist/HWCHECK.COM`(起動ディスクには入っていないので `tools/d88_put.py` で入れる)、ソースは `tests/hwcheck.asm`。
 - **ドライブ**: A: B: = 内蔵FDD(2D/2DD自動判別。X1 / MZ-700 の LSX と同じ標準形式)、C: D: = 外付けFDD(実装のみ)、E: = EMM(MZ-1R37。`FORMAT E:` が必要)、F: = RAMディスク、G: = 未使用(将来用)、H: = SASI HDD(`docs/sasi.md`)。
 - **MSX-DOS2 のファイルハンドル呼び出し**(BDOS 43h〜4Bh)、`>` `>>` `<` のリダイレクトと `|` のパイプ、環境変数(`SET` `ENV`、`$NAME`)、バッチ(`GOTO` `IF` `$?` `$1`〜`$9`)。
 - **行編集**: TAB補完、履歴(50件、`HIST` で履歴ファイル)、検索(`docs/line-edit.md`)。
@@ -30,6 +32,7 @@ MZ-700/1500 版(`M7*.ASM`)を土台に、機種依存部を `src/M25*.ASM` に�
 - ROM が無くても動くように、エミュレータの簡易IPLに「レコード番号方式」ブートを足した改造版でのブートも確認しています(`docs/emulator-modding.md`、`tools/emu_record_boot.patch`)。
 
 ## 未対応・未確認
+- E5h の実行時間、パイプの対応、HWCHECK の実機での結果は未確認です。
 - **実機での動作はすべて未確認**です(特に FDC、SASI、EMM/拡張RAM、漢字、色、RTC)。
 - 2HD、F1〜F10/GRAPH/HELP キー、HDDの複数パーティション、フォーマット/パーティション作成ツール(PCで作ってください)。
 - 行編集でのかな漢字変換(辞書ROMの利用は未調査。全角の名前はバッチやリダイレクト経由なら使える)。SGR の太字・下線、背景色の独立指定(MZ-2500 のテキスト属性は1セル1色のため不可)。
@@ -48,7 +51,8 @@ MZ-700/1500 版(`M7*.ASM`)を土台に、機種依存部を `src/M25*.ASM` に�
 コマンドを足したら `man/<名前>.txt` と `man/index.txt` も更新してください。
 
 ## ドキュメント
-`docs/HANDOFF.md`(経緯と引き継ぎ)、`docs/hardware-notes.md`、`docs/mmu-stage1.md`、`docs/memory-map.md`、`docs/block-devices.md`、`docs/sasi.md`、`docs/kanji.md`、`docs/line-edit.md`、`docs/mon.md`、`docs/man.md`、`docs/awk-games.md`、`docs/page-api.md`、`docs/app-memory-guide.md`、`docs/emulator-modding.md`。
+(注: ディスク内の `man sysinfo` に「空きは 07h-09h」とある所は古い記述で、現在は 07h-08h です。09h はOSのオーバーレイが使います。)
+`docs/HANDOFF.md`(経緯と引き継ぎ)、`docs/hardware-notes.md`、`docs/mmu-stage1.md`、`docs/memory-map.md`、`docs/block-devices.md`、`docs/sasi.md`、`docs/kanji.md`、`docs/line-edit.md`、`docs/mon.md`、`docs/man.md`、`docs/awk-games.md`、`docs/page-api.md`、`docs/exec-umap.md`、`docs/hwcheck.md`、`docs/app-memory-guide.md`、`docs/emulator-modding.md`。
 `docs/old-readme.md` は MMU 化の前の README(ブート方式やデバッグで分かったことの記録が残っています。一部は古い記述です)。
 
 ## ライセンス

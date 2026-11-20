@@ -1,0 +1,4 @@
+KMODE  漢字(Shift_JIS)表示
+
+  kmode [ON|OFF]        引数なし=ON。実体は ESC k 1 / ESC k 0
+  全角は横2セル。起動時はOFF。カーソルやBSは1セル単位。

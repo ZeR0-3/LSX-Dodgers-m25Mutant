@@ -119,7 +119,7 @@ for l in open(os.path.join(conv, 'body25.map'), encoding='utf-8', errors='replac
     m = re.match(r'^(\w+)\s*=\s*\$([0-9A-Fa-f]+)\s*;\s*addr', l)
     if m: _addr[m.group(1)] = int(m.group(2), 16)
 m_ed = int(re.search(r'^\s*EDBUF\s+EQU\s+0([0-9A-F]+)H', open(os.path.join(here,'src','M25DEF.ASM'),encoding='utf-8').read(), re.M).group(1), 16)
-_bl = int(re.search(r'^\s*BSSLOW\s+EQU', open(os.path.join(here,'src','M25DEF.ASM'),encoding='utf-8').read(), re.M) is not None) and (m_tab - 256 - 288 - 128 - 64)
+_bl = syms['LNBSS']                                  # 作業領域の一番下(ENVBUF の下の LNBSS。以前は LN の分を数え忘れていて、常駐の空きを108B多く見積もっていた)
 assert syms['AT_TABLE'] <= _bl, '作業領域(RFNAME..HSLOTS)がコードに食い込んだ (AT_TABLE=%04X > %04X)' % (syms['AT_TABLE'], _bl)
 assert syms['AT_TABLE'] <= m_tab, '本体のコードがTABLEADに食い込んだ (AT_TABLE=%04X)' % syms['AT_TABLE']
 #assert 0xEC40 + 0x080 + 0x28 + 0x28 + 0x80 + 0x104 <= m_tab, 'バウンスバッファがTABLEADを越えた'
@@ -129,7 +129,7 @@ open(os.path.join(conv, 'body25a.bin'), 'wb').write(body_a); open(os.path.join(c
 print('resident body free before E000H:', 0xE000 - syms['BODYEND'], 'bytes')
 print('body', len(body_full), 'bytes (image %d+%d)  code end %04X  free %d bytes' % (len(body_a), len(body_b), syms['AT_TABLE'], _bl - syms['AT_TABLE']))
 # ---- オーバーレイ (ORG 8000H。先頭に入口のJP表。本体のシンボルは使われているものだけ自動で取り込む) ----
-OVLS = [(['M25MODE', 'M25ENVC', 'M25PIPE', 'M25CWD', 'M25EDTO', 'M25LNAME'], ['C_MODE', 'C_SET', 'C_ENV', 'HND_PIPE', 'HND_PIPEK', 'HND_CDT', 'HND_PROMPT', 'EDO_KEY', 'EDT_ADD', 'C_HIST', 'HND_DIRNAME'])]                  # (ソース, 入口ラベル...) オーバーレイ番号は並び順
+OVLS = [(['M25MODE', 'M25ENVC', 'M25PIPE', 'M25CWD', 'M25EDTO', 'M25LNAME'], ['C_MODE', 'C_SET', 'C_ENV', 'HND_PIPE', 'HND_PIPEK', 'HND_CDT', 'HND_PROMPT', 'EDO_KEY', 'EDT_ADD', 'C_HIST', 'HND_DIRNAME']), (['M25PROC'], ['PR_EXEC', 'PR_EXIT', 'PR_RST'])]                  # (ソース, 入口ラベル...) オーバーレイ番号は並び順
 _defs = ''.join(open(os.path.join(conv, f), encoding='utf-8').read() for f in ('M25DEF.ASM', 'LDDEF.ASM'))
 _defnames = set(re.findall(r'^\s*(\w+)\s+EQU', _defs, re.M))
 ovl_bins = []
@@ -155,6 +155,12 @@ _kjb = int(re.search(r'^\s*KJBASE\s+EQU\s+0([0-9A-F]+)H', open(os.path.join(here
 assert _kjb + len(kj_bin) <= 0xA560, '漢字表示のコードがLDVARS(A560H)に食い込んだ (%d bytes)' % len(kj_bin)
 open(os.path.join(conv, 'kj.bin'), 'wb').write(kj_bin)
 print('kanji module', len(kj_bin), 'bytes @%04X (imports %d)' % (_kjb, len(_kjused)))
+sys.path.insert(0, os.path.join(here, 'tools'))
+import layout
+_errs, _warns = layout.check(os.path.join(here, 'src', 'M25DEF.ASM'), syms, len(kj_bin))
+for w in _warns: print('layout WARN:', w)
+if _errs: sys.exit('layout ERROR:\n  ' + '\n  '.join(_errs))
+print('layout check: %d warn, ok' % len(_warns))
 need = ['FILL_MEMORY','ZERO_MEMORY_DE','MSX','MSG_A','_COMANL','CPM_WBOOT','IO_INT8253','_DISKE',
         '_BREAK','CPM_BOOT','CHKEY','S27BUF','_DEVICE','UENTRY','UMSGA','UIOCS','UI_CRT','SASRD','SASBASE','SASBOOT','EMMN']
 miss = [n for n in need if n not in syms]
@@ -178,7 +184,7 @@ open(os.path.join(out, 'LD2500.BIN'), 'wb').write(sysbin + bytes(nsec * 512 - le
 RSV, FATSZ, NFAT, ROOTSEC = 36, 3, 2, 7
 sys_lsn0 = RSV + FATSZ * NFAT + ROOTSEC          # = 49 : 先頭クラスタの論理セクタ
 boot_src = open(os.path.join(conv, 'M25BOOT.ASM'), encoding='utf-8').read()
-OVL_PAGES = [0x0E + 0 * k for k in range(len(ovl_bins))]   # 今は1ページだけ(0Eh)。複数にするときはページを割り振る
+OVL_PAGES = [0x0E, 0x09][:len(ovl_bins)]   # オーバーレイ0=ページ0Eh、1=ページ09h(M25OVL.ASM の OVLPGT と同じ並び)
 boot = asm('boot', 'SYS_LSN0\tEQU\t%d\nSYS_NSEC\tEQU\t%d\nOVL_N\tEQU\t%d\n' % (sys_lsn0, nsec, len(ovl_bins)) + boot_src +
            'OVLPG:\tDB\t' + ','.join('0%02XH' % p for p in OVL_PAGES + [0]) + '\n')
 open(os.path.join(out, 'boot_payload.bin'), 'wb').write(boot)

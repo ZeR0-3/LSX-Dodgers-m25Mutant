@@ -1,0 +1,20 @@
+内蔵コマンド(COMMAND に組み込み)
+
+  A: ・ H: など     カレントドライブの変更   (G: は未使用。H: は SASI ハードディスク)
+  CD パス           カレントディレクトリの変更
+  COPY 元 [先]      ファイルのコピー(ワイルドカード可。同じものはスキップ)
+  DEL ファイル      削除(ワイルドカード可)
+  DIR [パス]  (D)   ファイル一覧(ワイルドカード可)
+  REN 旧 新         名前の変更
+  REM コメント      何もしない(バッチのコメント)
+  PATH [a:\bin;..]  外部コマンドの探索パス。PATH ; で解除、引数なしは表示
+  MODE 40|80        画面の桁数           (man mode)
+  SET / ENV         環境変数             (man env)
+  GOTO / IF         バッチの制御         (man batch)
+  HIST              コマンド履歴         (man hist)
+  IMON              旧IOCSモニタ(ROMのIOCSが必要)。通常は外部の MON.COM
+
+TYPE・MKDIR・RMDIR などは内蔵ではなく外部コマンド(LSX-Dodgers 本来の .COM)です。
+IOCS(ROM)を使うものはROMが無い環境では動きません。
+
+コマンドの探し順: 内蔵 → カレント → PATH 内の .COM / .BAT   (which で確認)

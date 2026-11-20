@@ -1,0 +1,16 @@
+LSX-Dodgers MZ-2500 簡易マニュアル     使い方: man 名前   (例: man grep)
+
+[内蔵コマンド]  man internal   cd copy del dir path ren rem ...
+                man env     SET ENV  と %NAME% / $NAME の展開
+                man batch   バッチ  GOTO IF  $? $1-$9
+                man mode    MODE 40|80
+                man hist    HIST  (履歴ファイル)
+[操作]          man edit    行編集 (TAB補完 / 履歴 / ^F)
+                man pipe    リダイレクト > >> < とパイプ |
+[外部コマンド]  (\BIN にある .COM)
+  awk cat cmp color cp date df diff du echo egrep find grep hd head
+  hitblow kmode ls mon more mv pal ramdisk sed sh sjis sort sysinfo tail tee touch tr uniq utf8 wc which man
+  [ゲーム] trek wumpus hitblow  (man trek など)
+
+スペース=次の画面  ENTER=1行  Q/ESC=終了
+漢字(Shift_JIS)で書いてあります。man は自動で KMODE をON/OFFします。

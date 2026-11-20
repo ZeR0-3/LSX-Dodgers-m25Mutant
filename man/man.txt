@@ -1,0 +1,6 @@
+MAN  簡易マニュアル
+
+  man [名前]       名前なし = 一覧(INDEX)。\MAN\名前.TXT を探して表示
+  カレントドライブ、A:、H:、B: の順に \MAN を探す。
+  表示中: SPACE=次の画面  ENTER=1行  Q / ESC=終了
+  man の間だけ漢字表示ON。パイプ・リダイレクト可(man grep > g.txt)。

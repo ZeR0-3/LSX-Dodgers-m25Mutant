@@ -1,0 +1,3 @@
+HEAD  先頭の行
+
+  head [-n N | -N] [file]       既定10行。file 省略 / - / con = 標準入力
