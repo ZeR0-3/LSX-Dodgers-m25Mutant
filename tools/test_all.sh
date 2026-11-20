@@ -1295,4 +1295,37 @@ for f in "$D"/LSX2500_*.d88; do
   else echo "FAIL $(basename $f) ゲーム"; rc=1; fi
 done
 
+# ユーザマップ表 UMAP: バンク2・6 を別ページに差し替えて UMAP も書き換えると、BDOS・IOCS(RST 18H)を呼んだあとも差し替え先のまま保たれる(tests/umap.asm)
+mkdir -p /tmp/_um; cp "$HERE/../tests/umap.asm" /tmp/_um/; (cd /tmp/_um && "$LSX_Z80ASM" -b -m=z80 umap.asm >/dev/null)
+for f in "$D"/LSX2500_*.d88; do
+  cp "$f" /tmp/_um/i.d88; python3 "$HERE/d88_put.py" /tmp/_um/i.d88 /tmp/_um/umap.bin UMAP.COM >/dev/null
+  case "$f" in *noiocs*) arg=" n"; need="UMAP-ISOLATED-OK";; *) arg=""; need="UMAP-IOCS-OK";; esac
+  out=$("$LSX_CLI" --real-ipl --rom-dir "$LSX_ROMDIR" --disk-a /tmp/_um/i.d88 --frames 900 --type "umap$arg\r:500" --screen-report 2>&1 | grep '^screen:')
+  if echo "$out" | grep -q "UMAP-INIT-OK" && echo "$out" | grep -q "UMAP-BDOS-OK" && echo "$out" | grep -q "$need" && echo "$out" | grep -q "UMAP-DONE" && ! echo "$out" | grep -q "UMAP-NG"; then echo "PASS $(basename $f) UMAP(ユーザマップ表の差し替え)"
+  else echo "FAIL $(basename $f) UMAP(ユーザマップ表の差し替え)"; echo "$out" | tail -8; rc=1; fi
+done
+
+# E5h EXEC(子を新しいページで起動し、終了したら戻る。tests/exectest.asm + execchild.asm): 親のパターンと予約ページが無傷・子の終了コード・内部コマンド・存在しないコマンド・ページが返る
+#   事前に ramdisk 64 で空きページを作る。 execfail: F: が128KBのままなら A=0F0h。 nestp/nestc: 親→子→孫(ramdisk 0 で14枚以上の空きを作る)
+mkdir -p /tmp/_ex; for s in execchild exectest execfail nestp nestc execrd hwcheck; do cp "$HERE/../tests/$s.asm" /tmp/_ex/; (cd /tmp/_ex && "$LSX_Z80ASM" -b -m=z80 $s.asm >/dev/null); done
+for f in "$D"/LSX2500_*.d88; do
+  cp "$f" /tmp/_ex/i.d88
+  for p in "execchild CHILD" "exectest EXECT" "execfail EXECF" "nestp NESTP" "nestc NESTC" "execrd EXECRD" "hwcheck HWCHECK"; do set -- $p; python3 "$HERE/d88_put.py" /tmp/_ex/i.d88 /tmp/_ex/$1.bin $2.COM >/dev/null; done
+  out=$("$LSX_CLI" --real-ipl --rom-dir "$LSX_ROMDIR" --disk-a /tmp/_ex/i.d88 --frames 2600 --type 'execf\r:500' --type 'ramdisk 64\r:700' --type 'cls\r:900' --type 'exect\r:1100' --screen-report 2>&1 | grep '^screen:')
+  if echo "$out" | grep -q "EXEC-P1-OK" && echo "$out" | grep -q "EXEC-P2-OK" && echo "$out" | grep -q "EXEC-P3-OK" && echo "$out" | grep -q "EXEC-P4-OK" && echo "$out" | grep -q "EXEC-P5-OK" && echo "$out" | grep -q "EXEC-P6-OK" && echo "$out" | grep -q "EXEC-P7-OK" && echo "$out" | grep -q "EXEC-P8-OK" && echo "$out" | grep -q "EXEC-DONE" && ! echo "$out" | grep -q "EXEC-NG"; then echo "PASS $(basename $f) EXEC(E5h: 子の起動・隔離・終了コード・内部コマンド・失敗・ページ返却)"
+  else echo "FAIL $(basename $f) EXEC"; echo "$out" | tail -12; rc=1; fi
+  out=$("$LSX_CLI" --real-ipl --rom-dir "$LSX_ROMDIR" --disk-a /tmp/_ex/i.d88 --frames 1800 --type 'execf\r:500' --type 'ramdisk 0\r:700' --type 'cls\r:900' --type 'nestp\r:1100' --screen-report 2>&1 | grep '^screen:')
+  if echo "$out" | grep -q "EXECFAIL-OK" && echo "$out" | grep -q "NEST-C-OK" && echo "$out" | grep -q "NEST-P-OK"; then echo "PASS $(basename $f) EXEC(ページ不足でA=F0h・親→子→孫の入れ子)"
+  else echo "FAIL $(basename $f) EXEC(ページ不足・入れ子)"; echo "$out" | tail -12; rc=1; fi
+  # 親が >R.TXT でリダイレクトされていても、E5h の後も親の出力が R.TXT へ行く(子の終了で親のリダイレクトを閉じない)
+  out=$("$LSX_CLI" --real-ipl --rom-dir "$LSX_ROMDIR" --disk-a /tmp/_ex/i.d88 --frames 2300 --type 'ramdisk 64\r:500' --type 'cls\r:700' --type 'execrd >r.txt\r:900' --type 'type r.txt\r:1700' --screen-report 2>&1 | grep '^screen:')
+  if echo "$out" | grep -q "RD-BEFORE" && echo "$out" | grep -q "CHILD-OK" && echo "$out" | grep -q "RD-AFTER" && [ -z "$(echo "$out" | awk '/execrd >r.txt/{f=1;next} /type r.txt/{f=0} f && /RD-AFTER/')" ] && echo "$out" | grep -q "RD-AFTER2"; then echo "PASS $(basename $f) EXEC(親のリダイレクトがE5hのあとも残る)"
+  else echo "FAIL $(basename $f) EXEC(親のリダイレクト)"; echo "$out" | tail -12; rc=1; fi
+  # 実機確認用 HWCHECK.COM(エミュレータでの自己確認: 空きページのパターン一致・空きページからの実行・BDOSをはさんでも残る・E5hで親が無傷)
+  out=$("$LSX_CLI" --real-ipl --rom-dir "$LSX_ROMDIR" --disk-a /tmp/_ex/i.d88 --frames 2300 --type 'ramdisk 64\r:500' --type 'cls\r:700' --type 'hwcheck\r:900' --screen-report 2>&1 | grep '^screen:')
+  oj=$(echo "$out" | sed 's/^screen: //; s/ *$//' | tr -d '\n')   # 40桁は行が折り返されるので連結してから見る
+  if echo "$oj" | grep -qE 'pattern ok=([0-9A-F]+)/\1' && echo "$oj" | grep -qE 'after BDOS calls ok=([0-9A-F]+)/\1' && echo "$oj" | grep -q '07=5A 08=5A' && echo "$oj" | grep -q 'E5h result A=00 parent 8000H-9FFFH intact' && echo "$oj" | grep -q 'HW:DONE'; then echo "PASS $(basename $f) HWCHECK(実機確認COMの自己確認)"
+  else echo "FAIL $(basename $f) HWCHECK"; echo "$out" | tail -14; rc=1; fi
+done
+
 exit $rc
