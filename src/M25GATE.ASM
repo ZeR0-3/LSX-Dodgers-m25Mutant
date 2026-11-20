@@ -83,11 +83,11 @@ KCALL:
 	LD	(INKRN),A
 	LD	A,5
 	OUT	(0B4H),A
-	LD	A,UPG5
+	LD	A,(UM5)
 	OUT	(0B5H),A
 	LD	A,6
 	OUT	(0B4H),A
-	LD	A,UPG6
+	LD	A,(UM6)
 	OUT	(0B5H),A
 	RET
 
@@ -222,6 +222,8 @@ GP_HI:					;40h以上: 文字列を取る 43h,44h,5Ah / 解析 5Ch / 6Bh だけ�
 	CP	044H
 	JR	Z,GP_S
 	CP	05AH
+	JR	Z,GP_S
+	CP	0E5H			;E5h EXEC: DE=コマンド行(文字列)
 	JR	Z,GP_S
 	CP	06BH
 	RET	NZ
@@ -698,20 +700,21 @@ UIBACK:
 	LD	(UIRAF),HL
 	XOR	A
 	OUT	(0B4H),A
-	OUT	(0B5H),A		;バンク0 = 00
-	INC	A
-	OUT	(0B5H),A		;バンク1 = 01
+	LD	A,(UMAP)
+	OUT	(0B5H),A		;バンク0 = 現プロセスの表(UMAP)から
+	LD	A,(UMAP+1)
+	OUT	(0B5H),A		;バンク1
 	LD	A,2
 	OUT	(0B4H),A
-	LD	A,2
+	LD	A,(UMAP+2)
 	OUT	(0B5H),A
-	LD	A,3
+	LD	A,(UMAP+3)
 	OUT	(0B5H),A
-	LD	A,UPG4
+	LD	A,(UM4)
 	OUT	(0B5H),A
-	LD	A,UPG5
+	LD	A,(UM5)
 	OUT	(0B5H),A
-	LD	A,UPG6
+	LD	A,(UM6)
 	OUT	(0B5H),A		;バンク2-6 = ユーザのマップ(バンク7は共通で動かさない)
 	IM	1
 	LD	A,008H
@@ -837,11 +840,11 @@ UXBACK:					;カーネルの飛び先から戻った所
 	LD	(INKRN),A
 	LD	A,5
 	OUT	(0B4H),A
-	LD	A,UPG5
+	LD	A,(UM5)
 	OUT	(0B5H),A
 	LD	A,6
 	OUT	(0B4H),A
-	LD	A,UPG6
+	LD	A,(UM6)
 	OUT	(0B5H),A
 	LD	SP,(USP)
 	LD	HL,(URAF)
@@ -870,20 +873,39 @@ UWBOOT:
 	LD	A,1
 	LD	(INKRN),A
 	LD	SP,KSTK
+	LD	A,(PDEPTH)
+	OR	A
+	JP	NZ,PEXIT			;E5h EXEC の子の終了: 親のマップ・状態を戻して親の呼び出しの続きへ(M25RES.ASM)
 	LD	HL,00080H
 	LD	(UDMA),HL
 	JP	WBOOT1
+
+;	PEXIT(M25RES.ASM)の最後: 親の結果(URAF等)・USP・UIFF は設定済み。親のバンク5,6(ユーザのマップ)にして、BDOS の戻り(UGRET)へ
+UXRET:
+	DI
+	LD	SP,GSTK-2
+	XOR	A
+	LD	(INKRN),A
+	LD	A,5
+	OUT	(0B4H),A
+	LD	A,(UM5)
+	OUT	(0B5H),A
+	LD	A,6
+	OUT	(0B4H),A
+	LD	A,(UM6)
+	OUT	(0B5H),A
+	JP	UGRET
 
 ;	COM起動: C_EXE の最後(JP SETFCB)の RET でここへ来る。ユーザマップ・ユーザSP(E000H)にして 0100H へ
 ULAUNCH:
 	DI
 	LD	A,5
 	OUT	(0B4H),A
-	LD	A,UPG5
+	LD	A,(UM5)
 	OUT	(0B5H),A
 	LD	A,6
 	OUT	(0B4H),A
-	LD	A,UPG6
+	LD	A,(UM6)
 	OUT	(0B5H),A
 	XOR	A
 	LD	(INKRN),A
@@ -902,9 +924,9 @@ UCPIN:
 	CP	0A0H
 	JR	C,UCP9			;A000H未満はそのまま見える
 	CP	0C0H
-	LD	A,UPG5
+	LD	A,(UM5)
 	JR	C,UCP1
-	LD	A,UPG6
+	LD	A,(UM6)
 UCP1:	PUSH	AF
 	LD	A,4
 	OUT	(0B4H),A
@@ -917,7 +939,7 @@ UCP1:	PUSH	AF
 	LDIR
 	LD	A,4
 	OUT	(0B4H),A
-	LD	A,UPG4
+	LD	A,(UM4)
 	OUT	(0B5H),A
 	RET
 UCP9:	LDIR

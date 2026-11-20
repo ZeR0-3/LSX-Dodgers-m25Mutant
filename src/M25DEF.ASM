@@ -119,3 +119,14 @@ UIDE	EQU	BOUNCEE+17
 IOCTN	EQU	0A0H		;IOCT の関数数(関数番号 0..9FH)
 BOOTDEV	EQU	0FF20H		;ブートローダが入れる起動デバイス(1=HDD)。INITが読む
 IOCT	EQU	BOUNCEE+19	;RST 18H の振り分け表(関数番号*2。DW: 0000=未実装 0001=ROMのIOCSへ素通し その他=自前ハンドラ。末尾 FF2FH の手前に収まる)
+;	現プロセスのユーザマップ表(バンク0..6 のページ。バンク7は共通で固定)。ゲート/IOCS戻り/UCPIN/MON_UNMAP がここから読む。
+;	今は1プロセスだけなので M25INIT が UPG* で初期化したまま変わらない(将来 exec が書き換える)
+UMAP	EQU	IOCT+IOCTN*2	;7バイト。IOCT の直後(FF17H-FF1DH)。BOOTDEV=FF20H の手前
+UM4	EQU	UMAP+4
+UM5	EQU	UMAP+5
+UM6	EQU	UMAP+6
+PDEPTH	EQU	UMAP+7		;子(E5h EXEC)の深さ 0=子なし。FF1EH。起動時に FF00H-FFFFH を0にするので初期値0
+;	プロセスの記録(E5h EXEC。M25RES.ASM)。カーネル時のバンク5の空き(LDVARS の後ろ)。32バイト×4
+PXCNT	EQU	0A57EH
+PXLEN	EQU	0A57FH
+PROCS	EQU	0A580H

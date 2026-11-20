@@ -8,10 +8,11 @@
 ;	  E4h LNAMEREG : DE=FCB(名前を 8+3 で入れたもの) HL=名前の9文字目以降(10バイト。余りは00h) -> A=0。長いファイル名(docs/longname.md)を FCB に結びつける。
 ;	                 このあと同じ FCB(名前を変えない)で 0Fh/11h/13h/16h/17h を呼ぶと、長い名前として扱う。結びつきは新しい4つの FCB まで。
 ;	予約したページは次のプログラムを起動する直前(LOADCOM)にすべて解放する。 ページを使うときの MMU の操作(B4h/B5h)は呼ぶ側で行う。
-;	07h-09h は LSX が使っていない(grep で確認しただけ。IPL ROM / IOCS が使っていないかは未確認)。
+;	07h-08h は LSX が使っていない(grep で確認しただけ。IPL ROM / IOCS が使っていないかは未確認)。09h はオーバーレイ1(E5h EXEC。M25PROC.ASM)。
+;	E5h EXEC: DE=コマンド行 -> 子を新しいページで起動して、終了したら A=終了コードで戻る(M25OVL.ASM の RS_EXEC / M25PROC.ASM)。
 E_NOPAGE	EQU	0F0H
 RES_DOS:
-	CP	0E5H
+	CP	0E6H
 	JP	NC,_DOS2B
 	SUB	0E0H
 	JR	Z,RS_INFO
@@ -19,6 +20,8 @@ RES_DOS:
 	JR	Z,RS_PINFO
 	DEC	A
 	JR	Z,RS_PALLOC
+	CP	3
+	JP	Z,RS_EXEC		;E5h
 	CP	2
 	JP	Z,LN_REG		;E4h
 ;	E3h
@@ -91,7 +94,7 @@ RI2:
 RI3:
 	LD	A,(EMMN)
 	LD	C,A
-	LD	E,2
+	LD	E,3			;拡張の版(3=E5h EXEC あり)
 	LD	A,(RDN)
 	LD	D,A
 	LD	HL,0E000H
@@ -125,9 +128,14 @@ POEXT:
 	JR	NC,POU
 	LD	A,3
 	RET
-POU:	LD	A,C			;RAMディスクの外 -> ユーザが予約済みか
+POU:	LD	A,C			;RAMディスクの外 -> ユーザが予約済みか(PGUSER)、または親が持っているか(PGHELD=PGUSER+4)
 	CALL	PG_UBIT
 	LD	A,(HL)
+	INC	HL
+	INC	HL
+	INC	HL
+	INC	HL
+	OR	(HL)
 	AND	D
 	LD	A,0
 	RET	Z
@@ -164,9 +172,11 @@ PG_FREEALL:
 	LD	(PGUSER),HL
 	LD	(PGUSER+2),HL
 	RET
-PGMAIN:	DB	2,2,2,2,2,2,1,0,0,0,2,1,1,1,1,1	;00-0F: 04,05=TPAの上(ユーザのバンク5,6) 06=カーネルのバンク6 0A=バンク4 0B=カーネルのバンク5 0C,0D=IOCS退避 0E=オーバーレイ 0F=共通
+PGMAIN:	DB	2,2,2,2,2,2,1,0,0,1,2,1,1,1,1,1	;00-0F: 04,05=TPAの上(ユーザのバンク5,6) 06=カーネルのバンク6 09=オーバーレイ1 0A=バンク4 0B=カーネルのバンク5 0C,0D=IOCS退避 0E=オーバーレイ0 0F=共通
 PGUSER:	DB	0,0,0,0
+PGHELD:	DB	0,0,0,0		;E5h EXEC で止まっている親の予約と、子のTPAのページ。PGUSER の直後(PG_OWNER が +4 で見る)
 EMMN:	DB	0
 ;	F:(RAMディスク)の状態は F: のDPB(_DEVICE+32*5)の未使用領域に置く。 RAMDISK.COM がここを直接書き換えて大きさを変える(§page-api)
 RDN	EQU	_DEVICE+32*5+016H	;F:のページ数(0-16。8KB単位。0=F:を使わない)
 RDEXT	EQU	_DEVICE+32*5+018H	;1:拡張RAM(10h-1Fh)がある(INITが設定)
+;	E5h EXEC の常駐側の入口(RS_EXEC / PEXIT / SETBK04)は、共通領域に空きがあるため M25OVL.ASM(ゲートより後ろ)に置いてある

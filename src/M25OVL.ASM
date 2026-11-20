@@ -65,7 +65,7 @@ OVLRET:
 	RET
 
 OVLSV:	DS	6			;入力 HL,DE,BC の一時置き場(DIの間だけ使う)
-OVLPGT:	DB	00EH			;オーバーレイ番号 → RAMページ (build.pyが数を合わせる)
+OVLPGT:	DB	00EH,009H		;オーバーレイ番号 → RAMページ (build.py の OVL_PAGES と同じ並び。1=E5h EXEC のオーバーレイ)
 
 C_MODE:
 	LD	A,0
@@ -103,3 +103,71 @@ HND_CDT:				;C_CD の後ろから。NZ(CD失敗)ならそのまま戻る。AFは
 HND_PROMPT:				;プロンプトのドライブ文字の後ろから
 	LD	A,6
 	JP	OVLCALL
+
+;	---- E5h EXEC(常駐側の入口): 子プログラムを新しいページ(0100H から)で起動し、終了したら親の BDOS 呼び出しの続きへ戻る ----
+;	入力: DE=コマンド行(00h/0Dh終端。79文字まで。内部コマンド・COM。.BAT は未対応)
+;	出力: 子の終了後に A=終了コード(0=正常 1=コマンドの失敗 他は子の 62h _TERM の B) / 起動できなかったとき A=0F0h(空きページ不足) 0F1h(深すぎ)
+;	親のTPA・ゼロページ・予約したページには触らない(子は空きページ7枚をバンク0-6に出して動く)。親の SP/IFF/DMA/UMAP/予約は記録(PROCS)に保存する。
+;	準備と後始末の本体はオーバーレイ1(M25PROC.ASM)。ここは常駐に残す小さな部分(バンク0-4 のハード反映と、コマンドの起動)だけ。
+;	未対応: 子が変えたカレントディレクトリ/開いたままのハンドル/環境変数は親に残る。カレントドライブ(0004H)は子のゼロページ側。
+SETBK04:				;UMAP のバンク0-4 をハードに反映(カーネル実行中。バンク5-7 は動かさない)
+	DI
+	LD	HL,UMAP
+	XOR	A
+	OUT	(0B4H),A
+	LD	B,5
+SB1:	LD	A,(HL)
+	OUT	(0B5H),A
+	INC	HL
+	DJNZ	SB1
+	RET
+RS_EXEC:
+	LD	H,D			;コマンド行を STAGE へ(親のメモリが見えるうちに)
+	LD	L,E
+	LD	DE,STAGE
+	LD	B,79
+XE2:	LD	A,(HL)
+	CP	00DH
+	JR	Z,XE3
+	OR	A
+	JR	Z,XE3
+	LD	(DE),A
+	INC	HL
+	INC	DE
+	DJNZ	XE2
+XE3:	XOR	A
+	LD	(DE),A
+	LD	A,E			;STAGE=xx00H なので E=長さ
+	LD	(PXLEN),A
+	LD	A,32			;オーバーレイ1 の入口0: 深さ・ページの確保・親の状態の保存・子のゼロページ・UMAP
+	CALL	OVLCALL
+	OR	A
+	RET	NZ			;A=0F0h/0F1h: 何も変えていない
+	CALL	SETBK04			;子のページをバンク0-4 に出す
+	LD	A,80			;子のコマンド行(子のゼロページ 0080H 以降)
+	LD	(DTA1),A
+	LD	A,(PXLEN)
+	LD	(DTA1+1),A
+	LD	HL,STAGE
+	LD	DE,DTA1+2
+	LD	BC,80
+	LDIR
+	CALL	SETDTA1
+	CALL	HND_EXPAND		;$変数の展開とリダイレクト(> >> <)は CCP と同じ。パイプ(|)は解釈しない
+	CALL	HND_REDIR
+	JR	NC,XE4
+	LD	A,1			;リダイレクトの失敗(メッセージは出ている)
+	LD	(EXITC),A
+	JR	PEXIT
+XE4:	LD	DE,DTA1+2
+	CALL	HND_RUN			;COM なら戻らない(ULAUNCH へ)。内部コマンドなら戻る
+	CALL	C,SHOW_ERROR		;(失敗は JP CPM_BOOT -> 0000H -> UWBOOT -> PEXIT で戻る)
+;	子の終了: UWBOOT(カーネルのマップ・SP=KSTK)からも来る。親の記録を戻して、親の E5h 呼び出しの続きへ(UXRET)
+PEXIT:
+	LD	A,34			;オーバーレイ1 の入口2: 子のコマンド行にリダイレクトがあったときだけ HND_RESET(親のリダイレクトは残す)
+	CALL	OVLCALL
+	DI
+	LD	A,33			;オーバーレイ1 の入口1: 親の UMAP/USP/UIFF/UDMA/予約を戻し、戻り値を設定
+	CALL	OVLCALL
+	CALL	SETBK04			;親のページをバンク0-4 に戻す
+	JP	UXRET

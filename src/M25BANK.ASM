@@ -614,9 +614,9 @@ MON_MAP:				;バンク2,3 = ページ0Ch,0Dh (IOCS RAMの退避先)
 MON_UNMAP:				;バンク2,3 = 標準(ページ02h,03h)
 	LD	A,2
 	OUT	(0B4H),A
-	LD	A,002H
+	LD	A,(UMAP+2)
 	OUT	(0B5H),A
-	LD	A,003H
+	LD	A,(UMAP+3)
 	OUT	(0B5H),A
 	RET
 
