@@ -1,0 +1,7 @@
+SH  シェルスクリプト(zsh/bash の一部)を .BAT に変換
+
+  sh script.sh        → script.BAT を作る(実行は script)
+  対応: # コメント  NAME=値  export unset  if [ ] ; then / elif / else / fi
+        while / for V in 語 ; do ... done  break continue exit  && ||  ;
+  条件: -e -f -d -s -r -w -x -h -L -z -n   a = b   a != b   !   test  [[ ]]
+  非対応は rem [sh] にして警告: $(..) ` $((..)) $# $@ $* $0 case function read shift local -lt など

@@ -1,0 +1,9 @@
+UTF8  UTF-8 → Shift_JIS 変換
+
+  utf8 [-c] [ファイル ...]
+  UTF-8 のテキストを Shift_JIS(JIS X 0208 + 半角カナ)にして標準出力へ出す。
+  引数なしなら標準入力から。  -c  LFだけの改行を CR LF にする
+  例) utf8 -c note.txt > note.sjs       cat note.txt | utf8 > note.sjs
+      utf8 -c note.txt | more           (表示するには kmode on)
+  表にない文字・絵文字(4バイト)は ? になる。NEC/IBM拡張の記号(① ㈱ など)は ? 。
+  ¥(U+00A5)は 5Ch、全角チルダ(～)は 8160h になる。

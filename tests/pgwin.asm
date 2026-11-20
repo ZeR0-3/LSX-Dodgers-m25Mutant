@@ -1,4 +1,4 @@
-; pgwin f|v : 物理ページ 07h-09h をバンク3(6000H)の窓に出して、パターンを書く(f)/確かめる(v)。
+; pgwin f|v : 物理ページ 07h-08h をバンク3(6000H)の窓に出して、パターンを書く(f)/確かめる(v)。
 ; ページを予約せずに直接 MMU を触る例でもある。 OS/IOCS/他のコマンドがこのページを壊さないことの試験用。
 	org 0100h
 	ld sp,0A000h
@@ -45,7 +45,7 @@ pw_n:	inc hl
 	ld b,a
 	inc b
 	ld a,b
-	cp 0Ah
+	cp 09h			; 07h,08h だけ(09h はオーバーレイ1)
 	jr c,pw_lp
 	ld de,(mode)
 	ld a,(mode)

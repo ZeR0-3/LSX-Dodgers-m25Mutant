@@ -1,0 +1,8 @@
+SJIS  Shift_JIS → UTF-8 変換
+
+  sjis [-l] [ファイル ...]
+  Shift_JIS(JIS X 0208 + 半角カナ)のテキストを UTF-8 にして標準出力へ出す。 utf8 の逆。
+  引数なしなら標準入力から。  -l  改行の CR を取って LF だけにする
+  例) sjis -l note.sjs > note.txt       cat note.sjs | sjis -l > note.txt
+  表にない文字(NEC/IBM拡張の記号など)は ? になる。5Ch(¥)はバックスラッシュのまま。
+  全角チルダ(8160h)は U+FF5E。

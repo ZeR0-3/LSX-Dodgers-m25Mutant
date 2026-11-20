@@ -1,0 +1,3 @@
+TEE  標準入力を画面とファイルへ
+
+  tee [-a] file       -a 追記    例) dir | tee list.txt

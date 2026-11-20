@@ -1,0 +1,3 @@
+UNIQ  隣り合う同じ行をまとめる
+
+  uniq [-c] [file]      -c 回数つき      例) sort a.txt | uniq -c

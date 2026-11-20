@@ -1,0 +1,10 @@
+リダイレクトとパイプ
+
+  cmd > file      標準出力をファイルへ(上書き)
+  cmd >> file     追記
+  cmd < file      標準入力をファイルから
+  a | b | c       パイプ(一時ファイルで実現。F: があれば F: を使う)
+  cat file | sort | uniq -c
+
+フィルタ: cat head tail more sort uniq grep wc tee tr hd
+パイプの途中で止まる(終了しない)コマンドは使えません。
